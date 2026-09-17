@@ -607,6 +607,10 @@ protected:
         UBX_Use115200     = (1U << 2U),
         UAVCAN_MBUseDedicatedBus  = (1 << 3U),
         HeightEllipsoid   = (1U << 4),
+        // documents this fork's Y-wire moving-baseline wiring (base UART1 TX
+        // to flight controller and rover UART2 RX). The Y-wire rover config
+        // is used whenever UBX_MBUseUart2 is off; this bit is not required.
+        UBX_MBBaseUart1ToRoverUart2 = (1U << 5),
     };
 
     // check if an option is set

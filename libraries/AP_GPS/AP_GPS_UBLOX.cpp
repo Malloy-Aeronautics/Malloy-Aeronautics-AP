@@ -98,10 +98,15 @@ AP_GPS_UBLOX::AP_GPS_UBLOX(AP_GPS &_gps, AP_GPS::GPS_State &_state, AP_HAL::UART
 #endif
 
 #if GPS_MOVING_BASELINE
-    if (role == AP_GPS::GPS_ROLE_MB_BASE && !mb_use_uart2()) {
-        rtcm3_parser = new RTCM3_Parser;
-        if (rtcm3_parser == nullptr) {
-            GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "u-blox %d: failed RTCMv3 parser allocation", state.instance + 1);
+    // the RTCM3 parser is only needed when the flight controller has to
+    // relay the base's corrections to the rover. With either direct
+    // interlink (UART2 or Y-wire) the rover hears the base itself.
+    if (role == AP_GPS::GPS_ROLE_MB_BASE) {
+        if (!mb_rover_fed_directly()) {
+            rtcm3_parser = new RTCM3_Parser;
+            if (rtcm3_parser == nullptr) {
+                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "u-blox %d: failed RTCMv3 parser allocation", state.instance + 1);
+            }
         }
         _unconfigured_messages |= CONFIG_RTK_MOVBASE;
     }
@@ -176,11 +181,9 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart2[] {
   data from a GPS previously configured as a base
  */
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart1[] {
- { ConfigKey::CFG_UART2_ENABLED, 1},
- { ConfigKey::CFG_UART2_BAUDRATE, 460800},
  { ConfigKey::CFG_UART2OUTPROT_RTCM3X, 0},
- { ConfigKey::CFG_UART1INPROT_RTCM3X, 0},
- { ConfigKey::CFG_UART2INPROT_RTCM3X, 1},
+ { ConfigKey::CFG_UART1INPROT_RTCM3X, 1},
+ { ConfigKey::CFG_UART2INPROT_RTCM3X, 0},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 1},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, 0},
@@ -221,6 +224,42 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+};
+
+/*
+  [MA] config for F9 GPS in moving baseline rover role on this fork's
+  Y-wire hardware: the base UART1 TX is wired to both the flight
+  controller and the rover UART2 RX. The base uses config_MB_Base_uart1,
+  so that wire carries the base's UBX replies as well as RTCM3. The rover
+  must therefore accept RTCM3 only on UART2: with UBX input enabled it
+  would execute the base's CFG poll replies as CFG set commands, undoing
+  its own configuration once per poll cycle. This is the default rover
+  list whenever GPS_DRV_OPTIONS bit 0 (dedicated UART2 interlink) is off.
+ */
+const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_ywire[] {
+ { ConfigKey::CFG_UART2_ENABLED, 1},
+ { ConfigKey::CFG_UART2_BAUDRATE, 460800},
+ { ConfigKey::CFG_UART2INPROT_UBX, 0},
+ { ConfigKey::CFG_UART2INPROT_NMEA, 0},
+ { ConfigKey::CFG_UART2INPROT_RTCM3X, 1},
+ { ConfigKey::CFG_UART2OUTPROT_RTCM3X, 0},
+ { ConfigKey::CFG_UART1INPROT_RTCM3X, 0},
+ { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 1},
+ { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, 0},
 };
 #endif // GPS_MOVING_BASELINE
 
@@ -379,7 +418,10 @@ AP_GPS_UBLOX::_request_next_config(void)
             static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Base_uart2), "done_mask too small, base2");
             static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Rover_uart1), "done_mask too small, rover1");
             static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Rover_uart2), "done_mask too small, rover2");
+            static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Rover_ywire), "done_mask too small, rover ywire");
             if (role == AP_GPS::GPS_ROLE_MB_BASE) {
+                // the Y-wire uses the stock uart1 base config: RTCM3 out on
+                // UART1, which is the wire shared with the rover
                 const config_list *list = mb_use_uart2()?config_MB_Base_uart2:config_MB_Base_uart1;
                 uint8_t list_length = mb_use_uart2()?ARRAY_SIZE(config_MB_Base_uart2):ARRAY_SIZE(config_MB_Base_uart1);
                 if (!_configure_config_set(list, list_length, CONFIG_RTK_MOVBASE)) {
@@ -387,8 +429,30 @@ AP_GPS_UBLOX::_request_next_config(void)
                 }
             }
             if (role == AP_GPS::GPS_ROLE_MB_ROVER) {
-                const config_list *list = mb_use_uart2()?config_MB_Rover_uart2:config_MB_Rover_uart1;
-                uint8_t list_length = mb_use_uart2()?ARRAY_SIZE(config_MB_Rover_uart2):ARRAY_SIZE(config_MB_Rover_uart1);
+                const config_list *list;
+                uint8_t list_length;
+                if (mb_use_uart2()) {
+                    list = config_MB_Rover_uart2;
+                    list_length = ARRAY_SIZE(config_MB_Rover_uart2);
+                } else {
+                    // this fork's hardware: base UART1 Y-wired to rover UART2
+                    list = config_MB_Rover_ywire;
+                    list_length = ARRAY_SIZE(config_MB_Rover_ywire);
+                    if (_unconfigured_messages & CONFIG_RTK_MOVBASE) {
+                        // deafen UART2 to UBX/NMEA before the VALGET round-trip
+                        // so the base's CFG poll replies on the Y-wire cannot
+                        // rewrite this rover
+                        const uint8_t off = 0;
+                        const uint8_t on = 1;
+                        const uint32_t baud = 460800;
+                        _configure_valset(ConfigKey::CFG_UART2_ENABLED, &on);
+                        _configure_valset(ConfigKey::CFG_UART2_BAUDRATE, &baud);
+                        _configure_valset(ConfigKey::CFG_UART2INPROT_UBX, &off);
+                        _configure_valset(ConfigKey::CFG_UART2INPROT_NMEA, &off);
+                        _configure_valset(ConfigKey::CFG_UART2INPROT_RTCM3X, &on);
+                        _configure_valset(ConfigKey::CFG_UART1INPROT_RTCM3X, &off);
+                    }
+                }
                 if (!_configure_config_set(list, list_length, CONFIG_RTK_MOVBASE)) {
                     _next_message--;
                 }
@@ -962,6 +1026,40 @@ AP_GPS_UBLOX::_parse_gps(void)
                 }
             }
         }
+#if GPS_MOVING_BASELINE
+        if (_msg_id == MSG_ACK_NACK) {
+            // backported from upstream ArduPilot: without this a NAKed
+            // multi-key VALGET produces no reply at all, so done_mask never
+            // fills and the config bit (e.g. CONFIG_RTK_MOVBASE) is stuck
+            // forever with no VALSET ever being sent
+            if (_buffer.nack.clsID == CLASS_CFG &&
+                _buffer.nack.msgID == MSG_CFG_VALGET &&
+                active_config.list != nullptr) {
+                Debug("NACK VALGET fetch_index=%d", int(active_config.fetch_index));
+                if (active_config.fetch_index == -1) {
+                    /*
+                      likely this device does not support fetching multiple
+                      keys at once, go one at a time
+                    */
+                    active_config.fetch_index = 0;
+                    use_single_valget = true;
+                } else {
+                    // the device does not support the config key we asked
+                    // for, consider the bit as done
+                    active_config.done_mask |= (1U<<active_config.fetch_index);
+                    if (active_config.done_mask == (1U<<active_config.count)-1 ||
+                        active_config.fetch_index >= active_config.count) {
+                        // all done!
+                        _unconfigured_messages &= ~active_config.unconfig_bit;
+                    }
+                    active_config.fetch_index++;
+                }
+                if (active_config.fetch_index < active_config.count) {
+                    _configure_valget(active_config.list[active_config.fetch_index].key);
+                }
+            }
+        }
+#endif // GPS_MOVING_BASELINE
         return false;
     }
 
@@ -1185,11 +1283,32 @@ AP_GPS_UBLOX::_parse_gps(void)
                         _unconfigured_messages |= active_config.unconfig_bit;
                         active_config.done_mask &= ~(1U << cfg_idx);
                         _cfg_needs_save = true;
+                        // report which key keeps the config bit set. Rate
+                        // limited: the first pass on a fresh module mismatches
+                        // every key, in steady state this should never print
+                        const uint32_t now_ms = AP_HAL::millis();
+                        if (now_ms - _last_mb_cfg_report_ms > 5000U) {
+                            _last_mb_cfg_report_ms = now_ms;
+                            uint32_t got = 0;
+                            memcpy(&got, cfg_data, MIN(key_size, (uint8_t)sizeof(got)));
+                            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "u-blox %d: cfg 0x%08x is %u want %u",
+                                          state.instance + 1, unsigned(id), unsigned(got),
+                                          unsigned(active_config.list[cfg_idx].value));
+                        }
                     } else {
                         active_config.done_mask |= (1U << cfg_idx);
                         if (active_config.done_mask == (1U<<active_config.count)-1) {
                             // all done!
                             _unconfigured_messages &= ~active_config.unconfig_bit;
+                        }
+                    }
+                    // when fetching one key at a time, move on to the next key
+                    if (active_config.fetch_index >= 0 &&
+                        active_config.fetch_index < active_config.count &&
+                        id == active_config.list[active_config.fetch_index].key) {
+                        active_config.fetch_index++;
+                        if (active_config.fetch_index < active_config.count) {
+                            _configure_valget(active_config.list[active_config.fetch_index].key);
                         }
                     }
                 }
@@ -1778,6 +1897,14 @@ AP_GPS_UBLOX::_configure_config_set(const config_list *list, uint8_t count, uint
     active_config.count = count;
     active_config.done_mask = 0;
     active_config.unconfig_bit = unconfig_bit;
+    // we start by fetching multiple values at once (with fetch_index
+    // -1) then if we get a NACK for VALGET we switch to fetching one
+    // value at a time
+    active_config.fetch_index = use_single_valget? 0 : -1;
+
+    if (use_single_valget) {
+        return _configure_valget(list[0].key);
+    }
 
     uint8_t buf[sizeof(ubx_cfg_valget)+count*sizeof(ConfigKey)];
     struct ubx_cfg_valget msg {};
@@ -2027,7 +2154,7 @@ bool AP_GPS_UBLOX::is_healthy(void) const
         // need F9 or above for moving baseline
         return false;
     }
-    if (role == AP_GPS::GPS_ROLE_MB_BASE && rtcm3_parser == nullptr && !mb_use_uart2()) {
+    if (role == AP_GPS::GPS_ROLE_MB_BASE && rtcm3_parser == nullptr && !mb_rover_fed_directly()) {
         // we haven't initialised RTCMv3 parser
         return false;
     }
