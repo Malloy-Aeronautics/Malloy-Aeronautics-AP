@@ -774,13 +774,10 @@ private:
         return option_set(AP_GPS::DriverOptions::UBX_MBUseUart2)?true:false;
     }
 
-    // This fork's moving-baseline hardware is Y-wired: base UART1 TX
-    // goes to the flight controller and the rover UART2 RX. That is the
-    // default whenever the dedicated UART2 interlink (bit 0) is off.
-    // GPS_DRV_OPTIONS bit 5 documents the same wiring in GCS; it is not
-    // required, so existing parameter files with GPS_DRV_OPTIONS=0 keep RTK.
+    // GPS_DRV_OPTIONS bit 5: base UART1 TX Y-wired to rover UART2 RX.
+    // Bit 0 (dedicated UART2 interlink) takes precedence when both are set.
     bool mb_ywire(void) const {
-        return !mb_use_uart2();
+        return !mb_use_uart2() && option_set(AP_GPS::DriverOptions::UBX_MBBaseUart1ToRoverUart2);
     }
 
     // true if the rover receives RTCM3 directly from the base (Y-wire or

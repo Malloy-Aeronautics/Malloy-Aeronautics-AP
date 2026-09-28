@@ -98,9 +98,10 @@ AP_GPS_UBLOX::AP_GPS_UBLOX(AP_GPS &_gps, AP_GPS::GPS_State &_state, AP_HAL::UART
 #endif
 
 #if GPS_MOVING_BASELINE
-    // the RTCM3 parser is only needed when the flight controller has to
-    // relay the base's corrections to the rover. With either direct
-    // interlink (UART2 or Y-wire) the rover hears the base itself.
+    // RTCM3 parser is only needed when the flight controller relays
+    // the base's corrections to the rover (stock UART1 path). Skip it
+    // when GPS_DRV_OPTIONS bit 0 (UART2 interlink) or bit 5 (Y-wire)
+    // feeds the rover directly.
     if (role == AP_GPS::GPS_ROLE_MB_BASE) {
         if (!mb_rover_fed_directly()) {
             rtcm3_parser = new RTCM3_Parser;
@@ -227,14 +228,11 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
 };
 
 /*
-  [MA] config for F9 GPS in moving baseline rover role on this fork's
-  Y-wire hardware: the base UART1 TX is wired to both the flight
-  controller and the rover UART2 RX. The base uses config_MB_Base_uart1,
-  so that wire carries the base's UBX replies as well as RTCM3. The rover
-  must therefore accept RTCM3 only on UART2: with UBX input enabled it
-  would execute the base's CFG poll replies as CFG set commands, undoing
-  its own configuration once per poll cycle. This is the default rover
-  list whenever GPS_DRV_OPTIONS bit 0 (dedicated UART2 interlink) is off.
+  [MA] rover config when GPS_DRV_OPTIONS bit 5 is set (Y-wire):
+  base UART1 TX is shared to the flight controller and rover UART2 RX.
+  That wire carries the base's UBX CFG replies as well as RTCM3, so the
+  rover must accept RTCM3 only on UART2. Used only when bit 5 is set
+  and bit 0 (UART2 interlink) is off.
  */
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_ywire[] {
  { ConfigKey::CFG_UART2_ENABLED, 1},
@@ -420,8 +418,8 @@ AP_GPS_UBLOX::_request_next_config(void)
             static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Rover_uart2), "done_mask too small, rover2");
             static_assert(sizeof(active_config.done_mask)*8 >= ARRAY_SIZE(config_MB_Rover_ywire), "done_mask too small, rover ywire");
             if (role == AP_GPS::GPS_ROLE_MB_BASE) {
-                // the Y-wire uses the stock uart1 base config: RTCM3 out on
-                // UART1, which is the wire shared with the rover
+                // Y-wire (bit 5) uses the uart1 base list: RTCM3 out on UART1.
+                // Bit 0 uses the uart2 base list.
                 const config_list *list = mb_use_uart2()?config_MB_Base_uart2:config_MB_Base_uart1;
                 uint8_t list_length = mb_use_uart2()?ARRAY_SIZE(config_MB_Base_uart2):ARRAY_SIZE(config_MB_Base_uart1);
                 if (!_configure_config_set(list, list_length, CONFIG_RTK_MOVBASE)) {
@@ -434,8 +432,7 @@ AP_GPS_UBLOX::_request_next_config(void)
                 if (mb_use_uart2()) {
                     list = config_MB_Rover_uart2;
                     list_length = ARRAY_SIZE(config_MB_Rover_uart2);
-                } else {
-                    // this fork's hardware: base UART1 Y-wired to rover UART2
+                } else if (mb_ywire()) {
                     list = config_MB_Rover_ywire;
                     list_length = ARRAY_SIZE(config_MB_Rover_ywire);
                     if (_unconfigured_messages & CONFIG_RTK_MOVBASE) {
@@ -452,6 +449,9 @@ AP_GPS_UBLOX::_request_next_config(void)
                         _configure_valset(ConfigKey::CFG_UART2INPROT_RTCM3X, &on);
                         _configure_valset(ConfigKey::CFG_UART1INPROT_RTCM3X, &off);
                     }
+                } else {
+                    list = config_MB_Rover_uart1;
+                    list_length = ARRAY_SIZE(config_MB_Rover_uart1);
                 }
                 if (!_configure_config_set(list, list_length, CONFIG_RTK_MOVBASE)) {
                     _next_message--;
