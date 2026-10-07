@@ -939,6 +939,19 @@ private:
     void userhook_auxSwitch2(const RC_Channel::AuxSwitchPos ch_flag);
     void userhook_auxSwitch3(const RC_Channel::AuxSwitchPos ch_flag);
 
+	// Temporary PID debug methods
+	void fast_debug_loop();
+	void slow_debug_loop();
+	void print_PID_terms();
+	void print_PID_Info(const AP_PIDInfo& p, const char* label, MAV_SEVERITY severity = MAV_SEVERITY_INFO);
+
+	AP_Motors::SpoolState 			_last_known_spool_state;
+	AP_Motors::DesiredSpoolState 	_last_known_desired_spool_state;
+	bool							_takeoff_complete_reported = false;
+	bool							_land_complete_reported = false;
+	uint64_t						_slow_debug_cycle_count = 0;
+	uint64_t						_fast_debug_cycle_count = 0;
+
 #if MODE_ACRO_ENABLED == ENABLED
 #if FRAME_CONFIG == HELI_FRAME
     ModeAcro_Heli mode_acro;

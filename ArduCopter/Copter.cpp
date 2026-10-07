@@ -254,6 +254,8 @@ const AP_Scheduler::Task Copter::scheduler_tasks[] = {
 #if STATS_ENABLED == ENABLED
     SCHED_TASK_CLASS(AP_Stats,             &copter.g2.stats,            update,           1, 100, 171),
 #endif
+	SCHED_TASK(slow_debug_loop,			2,		100,    174),
+	SCHED_TASK(fast_debug_loop,			100,	100,     177),
 };
 
 void Copter::get_scheduler_tasks(const AP_Scheduler::Task *&tasks,
@@ -755,6 +757,124 @@ bool Copter::get_rate_bf_targets(Vector3f& rate_bf_targets) const
 {
     rate_bf_targets = attitude_control->rate_bf_targets();
     return true;
+}
+
+void Copter::fast_debug_loop()
+{
+	auto previous_desired_spool_state = _last_known_desired_spool_state;
+	_last_known_desired_spool_state = motors->get_desired_spool_state();
+	if (_last_known_desired_spool_state != previous_desired_spool_state) {
+		switch (_last_known_desired_spool_state) {
+			case AP_Motors::DesiredSpoolState::SHUT_DOWN:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Desired Spool State: SHUT_DOWN");
+			break;
+			case AP_Motors::DesiredSpoolState::GROUND_IDLE:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Desired Spool State: GROUND_IDLE");
+			break;
+			case AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Desired Spool State: THROTTLE_UNLIMITED");
+			break;
+			default:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Desired Spool State: UNKNOWN");
+			break;
+		}
+	}
+
+	auto previous_spool_state = _last_known_spool_state;
+	_last_known_spool_state = motors->get_spool_state();
+	if (_last_known_spool_state != previous_spool_state) {
+		switch (_last_known_spool_state) {
+			case AP_Motors::SpoolState::SHUT_DOWN:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: SHUT_DOWN");
+			break;
+			case AP_Motors::SpoolState::GROUND_IDLE:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: GROUND_IDLE");
+			break;
+			case AP_Motors::SpoolState::SPOOLING_UP:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: SPOOLING_UP");
+			break;
+			case AP_Motors::SpoolState::THROTTLE_UNLIMITED:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: THROTTLE_UNLIMITED");
+			break;
+			case AP_Motors::SpoolState::SPOOLING_DOWN:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: SPOOLING_DOWN");
+			break;
+			default:
+			gcs().send_text(MAV_SEVERITY_WARNING, "Spool State: UNKNOWN");
+			break;
+		}
+	}
+
+	/*
+	if (!_takeoff_complete_reported && mode_auto.is_takeoff_complete()) {
+		_takeoff_complete_reported = true;
+		gcs().send_text(MAV_SEVERITY_WARNING, "TAKEOFF COMPLETE");
+	}
+
+	if (!_land_complete_reported && mode_auto.is_land_complete()) {
+		_land_complete_reported = true;
+		gcs().send_text(MAV_SEVERITY_WARNING, "LAND COMPLETE");
+	}
+	*/
+
+	_fast_debug_cycle_count++;
+}
+
+void Copter::slow_debug_loop()
+{
+	print_PID_terms();
+
+	_slow_debug_cycle_count++;
+}
+
+void Copter::print_PID_terms()
+{
+	if (_slow_debug_cycle_count % 2) {
+		gcs().send_text(MAV_SEVERITY_INFO, 
+			"PIDX:_|_Target_|_Actual_|_Error__|_P_|_I_|_D"
+		);
+	}
+
+	if (_slow_debug_cycle_count % 2) {
+		print_PID_Info(pos_control->get_accel_z_pid().get_pid_info(), 	"PIDA");
+		print_PID_Info(pos_control->get_vel_xy_pid().get_pid_info_x(), 	"PIDE");
+		print_PID_Info(pos_control->get_vel_xy_pid().get_pid_info_y(), 	"PIDN");
+	} else {
+		print_PID_Info(attitude_control->get_rate_roll_pid().get_pid_info(),	"PIDR");
+		print_PID_Info(attitude_control->get_rate_pitch_pid().get_pid_info(),   "PIDP");
+		print_PID_Info(attitude_control->get_rate_yaw_pid().get_pid_info(),    	"PIDY");
+	}
+}
+
+void Copter::print_PID_Info(const AP_PIDInfo& p, const char* label, MAV_SEVERITY severity)
+{
+	char msg_buff[64];
+	memset(msg_buff, 0, 64);
+
+	snprintf(
+		msg_buff,
+		64,
+		"%s: |%8.2f|%8.2f|%8.2f|%8.2f|%8.2f|%8.2f",
+		label, p.target, p.actual, p.error, p.P, p.I, p.D
+	);
+
+	// Replacing spaces with '_' because QGroundControl tends to remove whitespace
+	for (int i = 0; i < 64; i++) {
+		if (msg_buff[i] == 0) break;
+		if (msg_buff[i] == ' ') {
+			msg_buff[i] = '_';
+		}
+	}	
+
+	gcs().send_text(
+		severity,
+		"%s",
+		msg_buff
+		/*
+		"%s: |%7.2f |%7.2f |%7.2f |%7.2f |%7.2f |%7.2f |",
+		label, p.target, p.actual, p.error, p.P, p.I, p.D
+		*/
+	);
 }
 
 /*
