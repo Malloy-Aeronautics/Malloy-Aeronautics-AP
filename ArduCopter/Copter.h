@@ -952,6 +952,9 @@ private:
 	uint64_t						_slow_debug_cycle_count = 0;
 	uint64_t						_fast_debug_cycle_count = 0;
 
+	// Method to check ground speed and enforce speed limit if required
+	void check_ground_speed();
+
 #if MODE_ACRO_ENABLED == ENABLED
 #if FRAME_CONFIG == HELI_FRAME
     ModeAcro_Heli mode_acro;

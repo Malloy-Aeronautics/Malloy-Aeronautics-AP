@@ -255,6 +255,7 @@ const AP_Scheduler::Task Copter::scheduler_tasks[] = {
     SCHED_TASK_CLASS(AP_Stats,             &copter.g2.stats,            update,           1, 100, 171),
 #endif
 	SCHED_TASK(slow_debug_loop,			2,		100,    174),
+	SCHED_TASK(check_ground_speed,		2,      100,    175),
 	SCHED_TASK(fast_debug_loop,			100,	100,     177),
 };
 
@@ -875,6 +876,17 @@ void Copter::print_PID_Info(const AP_PIDInfo& p, const char* label, MAV_SEVERITY
 		label, p.target, p.actual, p.error, p.P, p.I, p.D
 		*/
 	);
+}
+
+void Copter::check_ground_speed()
+{
+	if (g2.spd_limit_apply == 0) return;
+
+	if (inertial_nav.get_speed_xy_cms() > g2.spd_limit_value * 100.0f /*m/2 to cm/s*/)
+	{
+		gcs().send_text(MAV_SEVERITY_WARNING, "SPEED LIMIT EXCEEDED!");
+		set_mode(Mode::Number::GUIDED, ModeReason::GCS_COMMAND);
+	}
 }
 
 /*
