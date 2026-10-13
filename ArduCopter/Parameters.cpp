@@ -1172,6 +1172,20 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // ID 62 is reserved for the SHOW_... parameters from the Skybrush fork at
     // https://github.com/skybrush-io/ardupilot
 
+	// @Param: SPD_LIMIT_APPLY
+	// @DisplayName: Enable/disable enforcement of speed limit
+	// @Description: If enabled, a ground speed limit specified in 'SPD_LIMIT_VALUE' is enforced in ALL FLIGHT MODES
+	// @Range: 0 1
+	// @User: Standard
+	AP_GROUPINFO("SPD_LIMIT_APPLY", 59, ParametersG2, spd_limit_apply, 0),
+
+	// @Param: SPD_LIMIT_VALUE
+	// @DisplayName: Hard ground speed limit
+	// @Description: Value of ground speed limit in m/s, when enforcment is enabled by setting the parameter 'SPD_LIMIT_APPLY' to 1
+	// @Range: 1.0	100.0
+	// @User: Standard
+	AP_GROUPINFO("SPD_LIMIT_VALUE", 60, ParametersG2, spd_limit_value, 20.0),
+
     AP_GROUPEND
 };
 
