@@ -241,6 +241,15 @@ void NavEKF3_core::calcGpsGoodForFlight(void)
     // position accuracy and speed accuracy and the EKF innovation consistency
     // checks
 
+    // the accuracy figures are combined with innovation ratios computed
+    // from the data being fused, so they must come from the instance being
+    // fused (selected_gps). preferred_gps can differ from it when this
+    // core's affinity GPS has lost its 3D fix and fusion has fallen back to
+    // the primary; judging the unused receiver here would flag the lane
+    // as glitching and drop the GPS height source while it is fusing good
+    // data. calcGpsGoodToAlign() deliberately keeps using preferred_gps.
+    const uint8_t fused_gps = selected_gps;
+
     // set up variables and constants used by filter that is applied to GPS speed accuracy
     const ftype alpha1 = 0.2f; // coefficient for first stage LPF applied to raw speed accuracy data
     const ftype tau = 10.0f; // time constant (sec) of peak hold decay
@@ -253,7 +262,7 @@ void NavEKF3_core::calcGpsGoodForFlight(void)
 
     // get the receivers reported speed accuracy
     float gpsSpdAccRaw;
-    if (!dal.gps().speed_accuracy(preferred_gps, gpsSpdAccRaw)) {
+    if (!dal.gps().speed_accuracy(fused_gps, gpsSpdAccRaw)) {
         gpsSpdAccRaw = 0.0f;
     }
 
@@ -278,7 +287,7 @@ void NavEKF3_core::calcGpsGoodForFlight(void)
         lastGpsVertAccFailTime_ms = imuSampleTime_ms;
         lastGpsVertAccPassTime_ms = imuSampleTime_ms;
     }
-    if (!dal.gps().vertical_accuracy(preferred_gps, gpsVAccRaw)) {
+    if (!dal.gps().vertical_accuracy(fused_gps, gpsVAccRaw)) {
         // No vertical accuracy data yet, let's treat it as a value above the threshold
         gpsVAccRaw = gpsVAccThreshold + 1.0f;
     }
