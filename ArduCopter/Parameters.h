@@ -3,6 +3,7 @@
 #include <AP_Common/AP_Common.h>
 #include "RC_Channel.h"
 #include <AP_Proximity/AP_Proximity.h>
+#include "AircraftInfo.h"
 
 #if GRIPPER_ENABLED == ENABLED
  # include <AP_Gripper/AP_Gripper.h>
@@ -675,6 +676,9 @@ public:
 #if HAL_WITH_ESC_TELEM && FRAME_CONFIG != HELI_FRAME
     AP_Int16 takeoff_rpm_min;
 #endif
+
+    // part serial numbers and flight hours timer (SN_ parameters)
+    AircraftInfo aircraft_info;
 };
 
 extern const AP_Param::Info        var_info[];
