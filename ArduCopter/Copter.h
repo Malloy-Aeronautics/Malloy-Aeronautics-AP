@@ -947,7 +947,7 @@ private:
 
 	AP_Motors::SpoolState 			_last_known_spool_state;
 	AP_Motors::DesiredSpoolState 	_last_known_desired_spool_state;
-	bool                            _spd_limit_reached = false;
+	bool                            _spd_limit_triggered = false;
 	bool							_takeoff_complete_reported = false;
 	bool							_land_complete_reported = false;
 	uint64_t						_slow_debug_cycle_count = 0;

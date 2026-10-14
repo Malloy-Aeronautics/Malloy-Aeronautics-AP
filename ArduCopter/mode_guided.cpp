@@ -607,6 +607,9 @@ bool ModeGuided::set_destination_posvelaccel(const Vector3f& destination, const 
     guided_pos_target_cm = destination.topostype();
     guided_pos_terrain_alt = false;
     guided_vel_target_cms = velocity;
+     if (copter.g2.spd_limit_apply != 0) {                                              // new
+        guided_vel_target_cms.xy().limit_length(copter.g2.spd_limit_value * 100.0f);   // new
+    }                     
     guided_accel_target_cmss = acceleration;
 
     // log target
