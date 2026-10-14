@@ -880,13 +880,32 @@ void Copter::print_PID_Info(const AP_PIDInfo& p, const char* label, MAV_SEVERITY
 
 void Copter::check_ground_speed()
 {
-	if (g2.spd_limit_apply == 0) return;
+    if (g2.spd_limit_apply == 0) {
+        _spd_limit_triggered = false;
+        return;
+        }
+    
+    const float limit_cms = g2.spd_limit_value * 100.0f;   // m/s to cm/s
+    const float speed_cms = inertial_nav.get_speed_xy_cms();
 
-	if (inertial_nav.get_speed_xy_cms() > g2.spd_limit_value * 100.0f /*m/2 to cm/s*/)
-	{
-		gcs().send_text(MAV_SEVERITY_WARNING, "SPEED LIMIT EXCEEDED!");
-		set_mode(Mode::Number::GUIDED, ModeReason::GCS_COMMAND);
-	}
+    if (speed_cms <= limit_cms) {
+        //re-arm the warning once we're back under the limit
+        if (speed_cms < 0.9f * limit_cms) {
+           _spd_limit_triggered = false; 
+           }
+           return;
+        }
+    if (! _spd_limit_triggered) {
+        gcs().send_text(MAV_SEVERITY_WARNING, "SPEED LIMIT EXCEEDED!");
+        _spd_limit_triggered = true;
+        }
+    
+    if (flightmode == &mode_guided) {
+    // set_mode() is a non operational when already in Guided, so stop explicitly
+    mode_guided.init(true);
+    } else {
+        set_mode(Mode::Number::GUIDED, ModeReason::GCS_COMMAND);
+        }
 }
 
 /*

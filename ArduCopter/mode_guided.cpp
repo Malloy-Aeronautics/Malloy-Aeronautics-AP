@@ -220,9 +220,13 @@ void ModeGuided::wp_control_run()
 // initialise position controller
 void ModeGuided::pva_control_start()
 {
-    // initialise horizontal speed, acceleration
-    pos_control->set_max_speed_accel_xy(wp_nav->get_default_speed_xy(), wp_nav->get_wp_acceleration());
-    pos_control->set_correction_speed_accel_xy(wp_nav->get_default_speed_xy(), wp_nav->get_wp_acceleration());
+    // initialise horizontal speed, acceleration if enabled)
+    float speed_xy_cms = wp_nav->get_default_speed_xy();
+    if (copter.g2.spd_limit_apply != 0) {
+        speed_xy_cms = MIN(speed_xy_cms, copter.g2.spd_limit_value * 100.0f);
+    }
+    pos_control->set_max_speed_accel_xy(speed_xy_cms, wp_nav->get_wp_acceleration());
+    pos_control->set_correction_speed_accel_xy(speed_xy_cms, wp_nav->get_wp_acceleration());
 
     // initialize vertical speeds and acceleration
     pos_control->set_max_speed_accel_z(wp_nav->get_default_speed_down(), wp_nav->get_default_speed_up(), wp_nav->get_accel_z());
@@ -286,6 +290,9 @@ bool ModeGuided::is_taking_off() const
 
 bool ModeGuided::set_speed_xy(float speed_xy_cms)
 {
+    if (copter.g2.spd_limit_apply != 0) {
+        speed_xy_cms = MIN(speed_xy_cms, copter.g2.spd_limit_value * 100.0f);
+    }
     // initialise horizontal speed, acceleration
     pos_control->set_max_speed_accel_xy(speed_xy_cms, wp_nav->get_wp_acceleration());
     pos_control->set_correction_speed_accel_xy(speed_xy_cms, wp_nav->get_wp_acceleration());
@@ -545,6 +552,9 @@ void ModeGuided::set_velocity(const Vector3f& velocity, bool use_yaw, float yaw_
 // set_velaccel - sets guided mode's target velocity and acceleration
 void ModeGuided::set_velaccel(const Vector3f& velocity, const Vector3f& acceleration, bool use_yaw, float yaw_cd, bool use_yaw_rate, float yaw_rate_cds, bool relative_yaw, bool log_request)
 {
+    if (copter.g2.spd_limit_apply != 0) {
+        guided_vel_target_cms.xy().limit_length(copter.g2.spd_limit_value * 100.0f);
+    }
     // check we are in velocity control mode
     if (guided_mode != SubMode::VelAccel) {
         velaccel_control_start();
