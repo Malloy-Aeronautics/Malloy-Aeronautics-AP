@@ -192,9 +192,11 @@ jobs:
           PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
         run: >-
-          python39 --version &&
-          python39 -m pip install --progress-bar off empy==3.3.4 pexpect &&
-          python39 -m pip install --progress-bar off dronecan --upgrade &&
+          python3.9 --version &&
+          python3.9 -m pip install --progress-bar off empy==3.3.4 pexpect &&
+          python3.9 -m pip install --progress-bar off dronecan --upgrade &&
+          ln -sf /usr/bin/python3.9 /usr/local/bin/python3 &&
+          ln -sf /usr/bin/python3.9 /usr/local/bin/python &&
           cp /usr/bin/ccache /usr/local/bin/ &&
           cd /usr/local/bin && ln -s ccache /usr/local/bin/gcc &&
           ln -s ccache /usr/local/bin/g++ &&
