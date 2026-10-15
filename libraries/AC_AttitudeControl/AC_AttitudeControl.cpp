@@ -148,6 +148,21 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("INPUT_TC", 20, AC_AttitudeControl, _input_tc, AC_ATTITUDE_CONTROL_INPUT_TC_DEFAULT),
 
+    // @Param: SPD_LIM_EN
+    // @DisplayName: Speed limit enable
+    // @Description: Speed limit enable flag. Enables PD controller for constraining speed in all flight modes.
+    // @Range: 0 1
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_EN", 21, AC_AttitudeControl, _speed_limit_apply, 0),
+
+    // @Param: SPD_LIM_VAL
+    // @DisplayName: Speed limit value
+    // @Description: Speed limit value. Enforced when SPEED_LIMIT_APPLY is set to 1.
+    // @Units: m/s
+    // @Range: 1.0 100.0
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_VAL", 22, AC_AttitudeControl, _speed_limit_value, 20.0f),
+
     AP_GROUPEND
 };
 
@@ -690,6 +705,22 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     // This represents a quaternion rotation in NED frame to the body
     Quaternion attitude_body;
     _ahrs.get_quat_body_to_ned(attitude_body);
+
+    // Check if speed limit enabled, if so run speed limiter
+    if (_speed_limit_apply) {
+        // Get velocity of vehicle from AHRS
+        Vector3f vehicle_velocity;
+        bool velocity_valid = _ahrs.get_velocity_NED(vehicle_velocity);
+        // Get lateral ground speed
+        Vector2f vehicle_lateral_velocity = vehicle_velocity.xy();
+        // Check if speed limit exceeded
+        if (velocity_valid && vehicle_lateral_velocity.length() > _speed_limit_value) {
+            Quaternion attitude_target_yaw_component = Quaternion(_attitude_target[0], 0, 0, _attitude_target[3]);
+            attitude_target_yaw_component.normalize();
+            _attitude_target = attitude_target_yaw_component;
+            _ang_vel_target = Vector3f();
+        }
+    }
 
     // This vector represents the angular error to rotate the thrust vector using x and y and heading using z
     Vector3f attitude_error;

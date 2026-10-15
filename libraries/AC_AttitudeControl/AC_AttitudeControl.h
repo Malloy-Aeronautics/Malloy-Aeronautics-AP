@@ -514,6 +514,12 @@ protected:
     // angle scale used for last loop, used for logging
     Vector3f            _angle_P_scale_used;
 
+    // parameters used for speed limit controller
+    AP_Int8             _speed_limit_apply;
+    AP_Float            _speed_limit_value;
+    AP_Float            _speed_limit_pd_p; // NOT YET IMPLEMENTED
+    AP_AccelCal         _speed_limit_pd_d; // NOT YET IMPLEMENTED
+
     // References to external libraries
     const AP_AHRS_View&  _ahrs;
     const AP_Vehicle::MultiCopter &_aparm;
