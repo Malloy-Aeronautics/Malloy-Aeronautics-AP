@@ -1,0 +1,57 @@
+name: Build release firmware
+
+on:
+  push:
+    tags:
+      - 'MA-Copter-*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: ardupilot/ardupilot-dev-chibios:v0.1.3
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: CubeOrange            # hwdef used on the CubeBlue FC
+            label: CubeBlue
+          - board: mRoControlZeroOEMH7
+            label: mRoControlZeroOEMH7
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Build ${{ matrix.label }} (${{ matrix.board }})
+        shell: bash
+        run: |
+          export PATH="/usr/lib/ccache:/opt/gcc-arm-none-eabi-10/bin:$PATH"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          arm-none-eabi-gcc --version
+          git describe --tags --exact-match
+          B=${{ matrix.board }}
+          L=${{ matrix.label }}
+          ./waf configure --board $B
+          ./waf copter
+          grep -a -c "$TAG" build/$B/bin/arducopter.bin || echo "WARNING: version string does not match tag"
+          NAME="MA-Copter-V${TAG#MA-Copter-}-${L}"
+          mkdir -p out
+          cp build/$B/bin/arducopter.apj "out/${NAME}.apj"
+          ls -l out
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ env.TAG }}-${{ matrix.label }}
+          path: out/*
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          draft: true
+          prerelease: ${{ contains(env.TAG, '-rc') }}
+          files: out/*
