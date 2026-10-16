@@ -169,6 +169,14 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_SUBGROUPINFO(_speed_limit_pid, "SPD_LIM_", 23, AC_AttitudeControl, AC_PID),
 
+    // @Param: SPD_LIM_MDA
+    // @DisplayName: Speed limit minimum derating angle
+    // @Description: Speed limit minimum derating angle.
+    // @Units: m/s
+    // @Range: 1.0 100.0
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_MDR", 24, AC_AttitudeControl, _speed_limit_min_derating_angle, 0.0f),
+
     AP_GROUPEND
 };
 
@@ -723,11 +731,10 @@ void AC_AttitudeControl::attitude_controller_run_quat()
         // Get lateral ground speed
         Vector2f vehicle_lateral_velocity = vehicle_velocity.xy();
 
-        float derating_angle = _speed_limit_pid.update_all(_speed_limit_value, vehicle_lateral_velocity.length());
-        derating_angle = constrain_float(derating_angle, 0, M_PI_2);
-
+        // Only run speed limiter if the velocity source it requires is valid.
         if (velocity_valid) {
-            // Deterimine derating axis
+            // Deterimine 'derating axis'. This axis is perpendicular to the lateral velocity and indicates
+            // the axis about which vehicle rotation either contributes or counteracts the current ground speed.
             Vector3f vehicle_lateral_velocity_normalized = Vector3f(vehicle_lateral_velocity, 0.0f).normalized();
             Vector3f derating_axis = Vector3f(vehicle_lateral_velocity_normalized.y, -vehicle_lateral_velocity_normalized.x, 0.0f).normalized();
 
@@ -736,25 +743,27 @@ void AC_AttitudeControl::attitude_controller_run_quat()
 
             // Get rotation around derating axis from closest orientation to vertical
             float rotation_around_derating_axis = wrap_PI(atan2(body_up_vector * vehicle_lateral_velocity_normalized, body_up_vector * Vector3f(0.0f, 0.0f, -1.0f)));
+
+            // The 'derating angle' specifies the maximum permitted rotation around the
+            // derating axis to prevent exceeding the speed limit
+            float derating_angle = _speed_limit_pid.update_all(_speed_limit_value, vehicle_lateral_velocity.length());
+            derating_angle = constrain_float(derating_angle, _speed_limit_min_derating_angle, M_PI);
             
             // Limit based on derating angle
             if (derating_angle < rotation_around_derating_axis) {
+                // Calculate delta angle to be applied to the attitude target around the derating axis
                 float derating_angle_delta = derating_angle - rotation_around_derating_axis;
 
+                // Define rotation correction using a quaternion
                 Quaternion derating_quat;
                 derating_quat.from_axis_angle(derating_axis, derating_angle_delta);
 
+                // Pre-multiply attitude target by derating rotation to enforce speed limit.
                 attitude_target_derated = derating_quat * _attitude_target;
             }
             else {
+                // If the speed limiting PID loop is not influencing the vehicle attitude prevent I windup.
                 _speed_limit_pid.relax_integrator(0.0f, 1.0f);
-            }
-
-
-            static int textCounter = 0;
-            if (textCounter++ == 50) {
-                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Derating angle: %f, Rotation: %f", derating_angle, rotation_around_derating_axis);
-                textCounter = 0;
             }
         }
     }

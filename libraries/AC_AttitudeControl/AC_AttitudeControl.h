@@ -46,7 +46,7 @@
 #define AC_ATTITUDE_CONTROL_THR_MIX_DEFAULT             0.5f  // ratio controlling the max throttle output during competing requests of low throttle from the pilot (or autopilot) and higher throttle for attitude control.  Higher favours Attitude over pilot input
 
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_P               2.0f
-#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_I               1.0f
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_I               0.05f
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_D               0.5f
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_IMAX            M_PI_2
 
@@ -525,6 +525,7 @@ protected:
     AP_Int8             _speed_limit_apply;
     AP_Float            _speed_limit_value;
     AC_PID              _speed_limit_pid;
+    AP_Float            _speed_limit_min_derating_angle;
 
     // References to external libraries
     const AP_AHRS_View&  _ahrs;
