@@ -163,6 +163,12 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("SPD_LIM_VAL", 22, AC_AttitudeControl, _speed_limit_value, 20.0f),
 
+    // @Param: SPD_LIM_
+    // @DisplayName: Speed limit PID
+    // @Description: Speed limit PID.
+    // @User: Standard
+    AP_SUBGROUPINFO(_speed_limit_pid, "SPD_LIM_", 23, AC_AttitudeControl, AC_PID),
+
     AP_GROUPEND
 };
 
@@ -706,6 +712,9 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     Quaternion attitude_body;
     _ahrs.get_quat_body_to_ned(attitude_body);
 
+    // Speed limit derated attitude target
+    Quaternion attitude_target_derated = _attitude_target;
+
     // Check if speed limit enabled, if so run speed limiter
     if (_speed_limit_apply) {
         // Get velocity of vehicle from AHRS
@@ -713,18 +722,49 @@ void AC_AttitudeControl::attitude_controller_run_quat()
         bool velocity_valid = _ahrs.get_velocity_NED(vehicle_velocity);
         // Get lateral ground speed
         Vector2f vehicle_lateral_velocity = vehicle_velocity.xy();
-        // Check if speed limit exceeded
-        if (velocity_valid && vehicle_lateral_velocity.length() > _speed_limit_value) {
-            Quaternion attitude_target_yaw_component = Quaternion(_attitude_target[0], 0, 0, _attitude_target[3]);
-            attitude_target_yaw_component.normalize();
-            _attitude_target = attitude_target_yaw_component;
-            _ang_vel_target = Vector3f();
+
+        float derating_angle = _speed_limit_pid.update_all(_speed_limit_value, vehicle_lateral_velocity.length());
+        derating_angle = constrain_float(derating_angle, 0, M_PI_2);
+
+        if (velocity_valid) {
+            // Deterimine derating axis
+            Vector3f vehicle_lateral_velocity_normalized = Vector3f(vehicle_lateral_velocity, 0.0f).normalized();
+            Vector3f derating_axis = Vector3f(vehicle_lateral_velocity_normalized.y, -vehicle_lateral_velocity_normalized.x, 0.0f).normalized();
+
+            // Determine aircraft body up vector rotated into world frame
+            Vector3f body_up_vector = _attitude_target * Vector3f(0.0f, 0.0f, -1.0f);
+
+            // Get rotation around derating axis from closest orientation to vertical
+            float rotation_around_derating_axis = wrap_PI(atan2(body_up_vector * vehicle_lateral_velocity_normalized, body_up_vector * Vector3f(0.0f, 0.0f, -1.0f)));
+            
+            // Limit based on derating angle
+            if (derating_angle < rotation_around_derating_axis) {
+                float derating_angle_delta = derating_angle - rotation_around_derating_axis;
+
+                Quaternion derating_quat;
+                derating_quat.from_axis_angle(derating_axis, derating_angle_delta);
+
+                attitude_target_derated = derating_quat * _attitude_target;
+            }
+            else {
+                _speed_limit_pid.relax_integrator(0.0f, 1.0f);
+            }
+
+
+            static int textCounter = 0;
+            if (textCounter++ == 50) {
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Derating angle: %f, Rotation: %f", derating_angle, rotation_around_derating_axis);
+                textCounter = 0;
+            }
         }
+    }
+    else {
+        _speed_limit_pid.reset_I();
     }
 
     // This vector represents the angular error to rotate the thrust vector using x and y and heading using z
     Vector3f attitude_error;
-    thrust_heading_rotation_angles(_attitude_target, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
+    thrust_heading_rotation_angles(attitude_target_derated, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
 
     // Compute the angular velocity corrections in the body frame from the attitude error
     _ang_vel_body = update_ang_vel_target_from_att_error(attitude_error);
@@ -733,7 +773,7 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     ang_vel_limit(_ang_vel_body, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
 
     // rotation from the target frame to the body frame
-    Quaternion rotation_target_to_body = attitude_body.inverse() * _attitude_target;
+    Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target_derated;
 
     // target angle velocity vector in the body frame
     Vector3f ang_vel_body_feedforward = rotation_target_to_body * _ang_vel_target;
@@ -764,7 +804,7 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     _attitude_target.normalize();
 
     // Record error to handle EKF resets
-    _attitude_ang_error = attitude_body.inverse() * _attitude_target;
+    _attitude_ang_error = attitude_body.inverse() * attitude_target_derated;
 }
 
 // thrust_heading_rotation_angles - calculates two ordered rotations to move the attitude_body quaternion to the attitude_target quaternion.
