@@ -49,10 +49,26 @@
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_I               0.05f
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_D               0.5f
 #define AC_ATTITUDE_CONTROL_SPEED_LIMIT_IMAX            M_PI_2
-
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_MIN_SPEED       0.1f  // m/s, limiter does nothing below this
 
 class AC_AttitudeControl {
 public:
+    // speed limiter helpers, static so they can be unit tested
+
+    // tilt of the thrust vector along vel_ne in rad, positive = accelerating, negative = braking
+    static float speed_limit_tilt_along_track(const Quaternion &attitude, const Vector2f &vel_ne);
+
+    // reduce the along track tilt of attitude_target to max_tilt_along_track, keeping the cross track part.
+    // returns true if it changed anything
+    static bool speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne,
+                                   float max_tilt_along_track, Quaternion &attitude_out);
+
+    // run the speed PID and derate the target for one loop.
+    // limiter_active should be last loop's value, it gets updated here
+    static Quaternion speed_limit_update(AC_PID &pid, float speed_limit, float min_derating_angle,
+                                         const Quaternion &attitude_target, const Vector2f &vel_ne,
+                                         bool &limiter_active);
+
     AC_AttitudeControl( AP_AHRS_View &ahrs,
                         const AP_Vehicle::MultiCopter &aparm,
                         AP_Motors& motors,
@@ -526,6 +542,7 @@ protected:
     AP_Float            _speed_limit_value;
     AC_PID              _speed_limit_pid;
     AP_Float            _speed_limit_min_derating_angle;
+    bool                _speed_limit_active = false;   // limiter changed the target last loop
 
     // References to external libraries
     const AP_AHRS_View&  _ahrs;

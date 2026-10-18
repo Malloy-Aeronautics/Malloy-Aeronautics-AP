@@ -724,50 +724,15 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     Quaternion attitude_target_derated = _attitude_target;
 
     // Check if speed limit enabled, if so run speed limiter
-    if (_speed_limit_apply) {
-        // Get velocity of vehicle from AHRS
+     if (_speed_limit_apply) {
         Vector3f vehicle_velocity;
-        bool velocity_valid = _ahrs.get_velocity_NED(vehicle_velocity);
-        // Get lateral ground speed
-        Vector2f vehicle_lateral_velocity = vehicle_velocity.xy();
-
-        // Only run speed limiter if the velocity source it requires is valid.
-        if (velocity_valid) {
-            // Deterimine 'derating axis'. This axis is perpendicular to the lateral velocity and indicates
-            // the axis about which vehicle rotation either contributes or counteracts the current ground speed.
-            Vector3f vehicle_lateral_velocity_normalized = Vector3f(vehicle_lateral_velocity, 0.0f).normalized();
-            Vector3f derating_axis = Vector3f(vehicle_lateral_velocity_normalized.y, -vehicle_lateral_velocity_normalized.x, 0.0f).normalized();
-
-            // Determine aircraft body up vector rotated into world frame
-            Vector3f body_up_vector = _attitude_target * Vector3f(0.0f, 0.0f, -1.0f);
-
-            // Get rotation around derating axis from closest orientation to vertical
-            float rotation_around_derating_axis = wrap_PI(atan2(body_up_vector * vehicle_lateral_velocity_normalized, body_up_vector * Vector3f(0.0f, 0.0f, -1.0f)));
-
-            // The 'derating angle' specifies the maximum permitted rotation around the
-            // derating axis to prevent exceeding the speed limit
-            float derating_angle = _speed_limit_pid.update_all(_speed_limit_value, vehicle_lateral_velocity.length());
-            derating_angle = constrain_float(derating_angle, _speed_limit_min_derating_angle, M_PI);
-            
-            // Limit based on derating angle
-            if (derating_angle < rotation_around_derating_axis) {
-                // Calculate delta angle to be applied to the attitude target around the derating axis
-                float derating_angle_delta = derating_angle - rotation_around_derating_axis;
-
-                // Define rotation correction using a quaternion
-                Quaternion derating_quat;
-                derating_quat.from_axis_angle(derating_axis, derating_angle_delta);
-
-                // Pre-multiply attitude target by derating rotation to enforce speed limit.
-                attitude_target_derated = derating_quat * _attitude_target;
-            }
-            else {
-                // If the speed limiting PID loop is not influencing the vehicle attitude prevent I windup.
-                _speed_limit_pid.relax_integrator(0.0f, 1.0f);
-            }
+        if (_ahrs.get_velocity_NED(vehicle_velocity)) {
+            attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value, _speed_limit_min_derating_angle,
+                                                         _attitude_target, vehicle_velocity.xy(), _speed_limit_active);
         }
     }
     else {
+        _speed_limit_active = false;
         _speed_limit_pid.reset_I();
     }
 
@@ -1245,3 +1210,57 @@ void AC_AttitudeControl::get_rpy_srate(float &roll_srate, float &pitch_srate, fl
     pitch_srate = get_rate_pitch_pid().get_pid_info().slew_rate;
     yaw_srate = get_rate_yaw_pid().get_pid_info().slew_rate;
 }
+float AC_AttitudeControl::speed_limit_tilt_along_track(const Quaternion &attitude, const Vector2f &vel_ne)
+{
+    const float speed = vel_ne.length();
+    if (!is_positive(speed)) {
+        return 0.0f;
+    }
+    const Vector3f track_dir{vel_ne.x / speed, vel_ne.y / speed, 0.0f};
+    const Vector3f earth_up{0.0f, 0.0f, -1.0f};
+    const Vector3f thrust_dir = attitude * earth_up;
+    return atan2f(thrust_dir * track_dir, thrust_dir * earth_up);
+}
+
+bool AC_AttitudeControl::speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne,
+                                            float max_tilt_along_track, Quaternion &attitude_out)
+{
+    attitude_out = attitude_target;
+
+    const float speed = vel_ne.length();
+    if (!isfinite(speed) || !isfinite(max_tilt_along_track) ||
+        speed < AC_ATTITUDE_CONTROL_SPEED_LIMIT_MIN_SPEED) {
+        return false;
+    }
+
+    const float tilt = speed_limit_tilt_along_track(attitude_target, vel_ne);
+    if (!isfinite(tilt) || tilt <= max_tilt_along_track) {
+        return false;
+    }
+
+    const Vector3f derating_axis{vel_ne.y / speed, -vel_ne.x / speed, 0.0f};
+    Quaternion correction;
+    correction.from_axis_angle(derating_axis, max_tilt_along_track - tilt);
+
+    // axis is in earth frame so pre-multiply
+    attitude_out = correction * attitude_target;
+    attitude_out.normalize();
+    return true;
+}
+
+Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit, float min_derating_angle,
+                                                  const Quaternion &attitude_target, const Vector2f &vel_ne,
+                                                  bool &limiter_active)
+{
+    // only let I grow while the limiter is doing something
+        float derating_angle = pid.update_all(speed_limit, vel_ne.length());
+    derating_angle = constrain_float(derating_angle, min_derating_angle, M_PI);
+
+    Quaternion attitude_out;
+    limiter_active = speed_limit_derate(attitude_target, vel_ne, derating_angle, attitude_out);
+    if (!limiter_active) {
+        pid.relax_integrator(0.0f, 1.0f);
+    }
+    return attitude_out;
+}
+ 
