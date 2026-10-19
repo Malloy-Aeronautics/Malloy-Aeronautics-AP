@@ -476,7 +476,7 @@ void AC_AttitudeControl::input_rate_bf_roll_pitch_yaw(float roll_rate_bf_cds, fl
     }
 
     // Call quaternion attitude controller
-    attitude_controller_run_quat();
+    attitude_controller_run_quat(false);
 }
 
 // Command an angular velocity with angular velocity smoothing using rate loops only with no attitude loop stabilization
@@ -714,7 +714,7 @@ Quaternion AC_AttitudeControl::attitude_from_thrust_vector(Vector3f thrust_vecto
 }
 
 // Calculates the body frame angular velocities to follow the target attitude
-void AC_AttitudeControl::attitude_controller_run_quat()
+void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_limit)
 {
     // This represents a quaternion rotation in NED frame to the body
     Quaternion attitude_body;
@@ -724,7 +724,7 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     Quaternion attitude_target_derated = _attitude_target;
 
     // Check if speed limit enabled, if so run speed limiter
-     if (_speed_limit_apply) {
+    if (_speed_limit_apply && mode_enable_speed_limit) {
         Vector3f vehicle_velocity;
         if (_ahrs.get_velocity_NED(vehicle_velocity)) {
             attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value, _speed_limit_min_derating_angle,
@@ -1253,7 +1253,7 @@ Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit
                                                   bool &limiter_active)
 {
     // only let I grow while the limiter is doing something
-        float derating_angle = pid.update_all(speed_limit, vel_ne.length());
+    float derating_angle = pid.update_all(speed_limit, vel_ne.length());
     derating_angle = constrain_float(derating_angle, min_derating_angle, M_PI);
 
     Quaternion attitude_out;

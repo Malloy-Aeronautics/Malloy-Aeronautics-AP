@@ -343,7 +343,7 @@ public:
     Vector3f euler_accel_limit(const Vector3f &euler_rad, const Vector3f &euler_accel);
 
     // Calculates the body frame angular velocities to follow the target attitude
-    void attitude_controller_run_quat();
+    void attitude_controller_run_quat(bool mode_enable_speed_limit = true);
 
     // thrust_heading_rotation_angles - calculates two ordered rotations to move the attitude_body quaternion to the attitude_target quaternion.
     // The maximum error in the yaw axis is limited based on the angle yaw P value and acceleration.
