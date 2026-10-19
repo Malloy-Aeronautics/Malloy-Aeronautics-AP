@@ -1253,7 +1253,7 @@ Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit
                                                   bool &limiter_active)
 {
     // only let I grow while the limiter is doing something
-    float derating_angle = pid.update_all(speed_limit, vel_ne.length());
+    float derating_angle = pid.update_all(speed_limit, vel_ne.length(), !limiter_active);
     derating_angle = constrain_float(derating_angle, min_derating_angle, M_PI);
 
     Quaternion attitude_out;
