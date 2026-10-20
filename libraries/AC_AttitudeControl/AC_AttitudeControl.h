@@ -66,7 +66,8 @@ public:
     // run the speed PID and derate the target for one loop.
     // limiter_active should be last loop's value, it gets updated here
     static Quaternion speed_limit_update(AC_PID &pid, float speed_limit, const Quaternion &attitude_target, const Vector2f &vel_ne, bool &limiter_active);
-
+    void set_speed_limit_override(bool override) { _speed_limit_override = override; }
+    bool get_speed_limit_override() const { return _speed_limit_override; }
     AC_AttitudeControl( AP_AHRS_View &ahrs,
                         const AP_Vehicle::MultiCopter &aparm,
                         AP_Motors& motors,
@@ -540,7 +541,7 @@ protected:
     AP_Float            _speed_limit_value;
     AC_PID              _speed_limit_pid;
     bool                _speed_limit_active = false;   // limiter changed the target last loop
-
+    bool                _speed_limit_override = false; // pilot has switched the limiter off
     // References to external libraries
     const AP_AHRS_View&  _ahrs;
     const AP_Vehicle::MultiCopter &_aparm;
