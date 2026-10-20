@@ -1,0 +1,75 @@
+name: test speed limiter
+
+# Runs the speed limiter unit tests and SITL autotests whenever the attitude controller,
+on:
+  pull_request:
+    paths:
+      - 'libraries/AC_AttitudeControl/**'
+      - 'libraries/AC_PID/**'
+      - 'ArduCopter/**'
+      - 'Tools/autotest/arducopter.py'
+      - '.github/workflows/test_speed_limiter.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{github.workflow}}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  speed-limiter:
+    runs-on: ubuntu-22.04
+    container: ardupilot/ardupilot-dev-${{ matrix.toolchain }}:v0.1.3
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+
+      - name: build SITL and unit test
+        shell: bash
+        run: |
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+          export PATH="/github/home/.local/bin:$PATH"
+          ./waf configure --board sitl
+          ./waf copter
+          ./waf --target tests/test_speed_limiter
+
+      - name: unit tests
+        shell: bash
+        run: ./build/sitl/tests/test_speed_limiter
+
+      - name: SITL autotests
+        shell: bash
+        run: |
+          export PATH="/github/home/.local/bin:$PATH"
+          Tools/autotest/autotest.py --no-clean \
+            test.Copter.SpeedLimitAttitudeDisabledSanity \
+            test.Copter.SpeedLimitAttitudeAltHold \
+            test.Copter.SpeedLimitAttitudeSteeringAndYaw \
+            test.Copter.SpeedLimitAttitudeAuto \
+            test.Copter.SpeedLimitAttitudeTailwindBraking \
+            test.Copter.SpeedLimitRecoversAfterTailwindDrops \
+            test.Copter.SpeedLimitLoiter \
+            test.Copter.SpeedLimitGuidedVelocity \
+            test.Copter.SpeedLimitModeTransitions \
+            test.Copter.SpeedLimitEnableInFlight \
+            test.Copter.SpeedLimitLowerLimitInFlight \
+            test.Copter.SpeedLimitGPSOutage \
+            test.Copter.SpeedLimitRCFailsafeRTL \
+            test.Copter.SpeedLimitNoOvershootAfterGroundWait \
+            test.Copter.SpeedLimitVibration \
+            test.Copter.SpeedLimitFenceBreachAltHold \
+            test.Copter.SpeedLimitFenceBreachAltHoldNoLimiter \
+            test.Copter.SpeedLimitFenceAvoidLoiter \
+            test.Copter.SpeedLimitFenceAvoidLoiterTailwind \
+            test.Copter.SpeedLimitFenceBreachAltHoldTailwind \
+            test.Copter.SpeedLimitFenceMatchedSpeed
+
+      - name: keep logs if something failed
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: speed-limiter-logs
+          path: |
+            /tmp/buildlogs
+            logs/
+          retention-days: 14

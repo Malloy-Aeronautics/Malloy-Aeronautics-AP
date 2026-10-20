@@ -1,15 +1,22 @@
 /*
   Tests for the attitude controller speed limiter (FMSMS-456).
-  
-  SpeedLimit loop runs at 400Hz, trying to see if with these unit tests 
-  the changes to the core functionality of the code changes anything
 
+  SpeedLimitGeometry checks speed_limit_derate() and speed_limit_tilt_along_track() directly.
+  SpeedLimitClosedLoop runs speed_limit_update() against a simple point mass model at 400Hz.
+  SpeedLimitRobustness adds a noisy velocity estimate, braking, headwind and limit changes.
+  SpeedLimitParams covers parameter values that make the vehicle unusable (pre-arm check fodder).
+
+  ./waf configure --board sitl
+  ./waf --target tests/test_speed_limiter
+  ./build/sitl/tests/test_speed_limiter
 */
 
 #include <AP_gtest.h>
 
 #include <AC_AttitudeControl/AC_AttitudeControl.h>
 #include <AC_PID/AC_PID.h>
+
+#include <random>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -61,9 +68,10 @@ float tilt_along(const Quaternion &q, const Vector2f &vel)
     return AC_AttitudeControl::speed_limit_tilt_along_track(q, vel);
 }
 
+// bit for bit, so we know the target was passed through untouched
 bool quat_equal(const Quaternion &a, const Quaternion &b)
 {
-    return a.q1 == b.q1 && a.q2 == b.q2 && a.q3 == b.q3 && a.q4 == b.q4;
+    return memcmp(&a, &b, sizeof(Quaternion)) == 0;
 }
 
 }  // namespace
@@ -245,7 +253,7 @@ TEST(SpeedLimitGeometry, NearInvertedTargetStaysFinite)
 
 TEST(SpeedLimitGeometry, RandomisedInvariants)
 {
-    // fixed seed checking if the failures are repeatable, silent killer
+    // fixed seed so failures are repeatable
     uint32_t seed = 12345;
     auto rnd = [&seed](float lo, float hi) {
         seed = seed * 1664525u + 1013904223u;
@@ -273,8 +281,11 @@ namespace {
 
 constexpr float LOOP_DT = 1.0f / 400.0f;
 constexpr float LIMIT   = 10.0f;           // m/s
+// pass bands, set just outside what the correct code does (max 9.97, mean 9.97, settles in 2.8s)
+constexpr float MAX_OVERSHOOT = 1.02f;     // max speed / limit
+constexpr float MEAN_TOL      = 0.15f;     // m/s, steady state mean vs target
 
-// Very simple copter model holding altitude.
+// Very simple copter model holding altitude. Thrust direction lags the command (first order),
 // horizontal accel is g * tan(tilt) minus linear drag. Tops out around 22 m/s at 30 deg.
 struct PointMassCopter {
     Vector2f vel;                         // NE, m/s
@@ -300,7 +311,6 @@ struct SpeedLimiter {
                AC_ATTITUDE_CONTROL_SPEED_LIMIT_D, 0.0f, AC_ATTITUDE_CONTROL_SPEED_LIMIT_IMAX,
                0.0f, 0.0f, 0.0f, LOOP_DT};
     float limit = LIMIT;
-    float min_derating_angle = 0.0f;      // rad
     bool limited = false;
 
     // AC_PID doesn't initialise _integrator, it relies on ArduPilot's zeroing new. Here it's on the stack.
@@ -308,7 +318,7 @@ struct SpeedLimiter {
 
     Quaternion apply(const Quaternion &target, const Vector2f &vel)
     {
-        return AC_AttitudeControl::speed_limit_update(pid, limit, min_derating_angle, target, vel, limited);
+        return AC_AttitudeControl::speed_limit_update(pid, limit, target, vel, limited);
     }
 };
 
@@ -341,7 +351,7 @@ RunStats fly(PointMassCopter &copter, SpeedLimiter *limiter, const Quaternion &p
     return s;
 }
 
-}
+}  // namespace
 
 TEST(SpeedLimitClosedLoop, BaselineWithoutLimiterExceedsLimit)
 {
@@ -357,12 +367,41 @@ TEST(SpeedLimitClosedLoop, HoldsSpeedAtLimitInStillAir)
     SpeedLimiter limiter;
     const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 60);
     EXPECT_FALSE(s.any_nan);
-    EXPECT_LE(s.max_speed, LIMIT * 1.05f);
-    EXPECT_NEAR(s.mean_speed_last_10s, LIMIT, 0.5f);
+    EXPECT_LE(s.max_speed, LIMIT * MAX_OVERSHOOT);
+    EXPECT_NEAR(s.mean_speed_last_10s, LIMIT, MEAN_TOL);
     EXPECT_TRUE(limiter.limited);
 }
 
-TEST(SpeedLimitClosedLoop, DISABLED_DoesNotInterfereBelowLimit)
+TEST(SpeedLimitClosedLoop, SettlesQuicklyAtLimit)
+{
+    // within +-2% of the limit by 5s and stays there (default gains do it in 2.8s, half gains take 9s)
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    const Quaternion pilot = attitude_deg(0, -30, 0);
+    float last_outside = 0.0f;
+    for (int i = 0; i < int(30.0f / LOOP_DT); i++) {
+        copter.step(limiter.apply(pilot, copter.vel));
+        if (fabsf(copter.vel.length() - LIMIT) > 0.02f * LIMIT) {
+            last_outside = i * LOOP_DT;
+        }
+    }
+    EXPECT_LT(last_outside, 5.0f);
+}
+
+TEST(SpeedLimitClosedLoop, IntegratorDecaysWhenIdle)
+{
+    // I builds up while holding the limit (~0.19 here) and must bleed off once the limiter stops
+    // acting, otherwise the next approach starts with a stale allowance
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 60);
+    ASSERT_GT(fabsf(limiter.pid.get_i()), 0.05f);
+    fly(copter, &limiter, attitude_deg(0, 20, 0), 3);       // brake
+    fly(copter, &limiter, attitude_deg(0, 0, 0), 10);       // then idle
+    EXPECT_NEAR(limiter.pid.get_i(), 0.0f, 0.01f);
+}
+
+TEST(SpeedLimitClosedLoop, DoesNotInterfereBelowLimit)
 {
     // 5 deg forward only gets to about 3.4 m/s
     PointMassCopter copter;
@@ -378,7 +417,7 @@ TEST(SpeedLimitClosedLoop, DISABLED_DoesNotInterfereBelowLimit)
     EXPECT_NEAR(limiter.pid.get_i(), 0.0f, 1.0e-3f);
 }
 
-TEST(SpeedLimitClosedLoop, DISABLED_NoOvershootAfterLongHover)
+TEST(SpeedLimitClosedLoop, NoOvershootAfterLongHover)
 {
     // hovering means a big speed error for a long time, so this is where I windup shows up
     PointMassCopter copter;
@@ -386,7 +425,7 @@ TEST(SpeedLimitClosedLoop, DISABLED_NoOvershootAfterLongHover)
     fly(copter, &limiter, attitude_deg(0, 0, 0), 120);
     EXPECT_NEAR(limiter.pid.get_i(), 0.0f, 1.0e-3f);
     const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 40);
-    EXPECT_LE(s.max_speed, LIMIT * 1.05f);
+    EXPECT_LE(s.max_speed, LIMIT * MAX_OVERSHOOT);
 }
 
 TEST(SpeedLimitClosedLoop, PilotCanStillSteerWhileLimited)
@@ -401,7 +440,7 @@ TEST(SpeedLimitClosedLoop, PilotCanStillSteerWhileLimited)
     const float course_after = degrees(atan2f(copter.vel.y, copter.vel.x));
 
     EXPECT_GT(course_after - course_before, 20.0f);
-    EXPECT_LE(s.max_speed, LIMIT * 1.05f);
+    EXPECT_LE(s.max_speed, LIMIT * MAX_OVERSHOOT);
 }
 
 TEST(SpeedLimitClosedLoop, NoResidualLimitingAfterSlowingDown)
@@ -421,36 +460,225 @@ TEST(SpeedLimitClosedLoop, NoResidualLimitingAfterSlowingDown)
     }
 }
 
-TEST(SpeedLimitClosedLoop, TailwindAboveLimitIsNotHeldWithoutBraking)
+TEST(SpeedLimitClosedLoop, TailwindAboveLimitIsNotHeld)
 {
+    // the limiter can only level the vehicle, never tilt it back, so a tailwind faster than the
+    // limit carries it over. Known limitation, this pins the behaviour down.
     PointMassCopter copter;
     copter.wind = vel_from_course(15, 0);
     SpeedLimiter limiter;
-    limiter.min_derating_angle = 0.0f;
     const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 60);
     EXPECT_GT(s.mean_speed_last_10s, LIMIT + 3.0f);
 }
 
-TEST(SpeedLimitClosedLoop, TailwindAboveLimitIsHeldWithBraking)
+TEST(SpeedLimitClosedLoop, RecoversAfterTailwindDrops)
 {
+    // a tailwind faster than the limit pins the output at the 0 clamp. I mustn't keep winding
+    // down while it's pinned, or the vehicle is held well under the limit after the wind drops
     PointMassCopter copter;
     copter.wind = vel_from_course(15, 0);
     SpeedLimiter limiter;
-    limiter.min_derating_angle = radians(-20);
-    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 60);
-    EXPECT_FALSE(s.any_nan);
-    EXPECT_NEAR(s.mean_speed_last_10s, LIMIT, 0.5f);
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 60);
+    EXPECT_LT(fabsf(limiter.pid.get_i()), 0.5f);
+    copter.wind.zero();
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 5);
+    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 10);
+    EXPECT_NEAR(s.mean_speed_last_10s, LIMIT, MEAN_TOL);
 }
 
 TEST(SpeedLimitClosedLoop, RecoversFromGustAboveLimit)
 {
+    // it can only level the vehicle, so drag does the slowing down, give it time
     PointMassCopter copter;
     SpeedLimiter limiter;
-    limiter.min_derating_angle = radians(-20);
     fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
     copter.vel += vel_from_course(4, 0);                    // gust
-    fly(copter, &limiter, attitude_deg(0, -30, 0), 5);
-    EXPECT_LE(copter.vel.length(), LIMIT + 0.5f);
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 15);
+    EXPECT_LE(copter.vel.length(), LIMIT * MAX_OVERSHOOT);
+}
+
+namespace {
+
+// EKF velocity with IMU vibration on it. The output predictor integrates the accel, so the
+// velocity we see has the vibration (after the 20Hz INS filter) in its derivative, with GPS
+// fusion pulling the error back. accel_rms is roughly the rms of that filtered accel noise.
+struct NoisyVelocity {
+    explicit NoisyVelocity(float accel_rms) : sigma(accel_rms) {}
+    float sigma;
+    std::mt19937 gen{42};
+    std::normal_distribution<float> n{0.0f, 1.0f};
+    Vector2f accel_noise;
+    Vector2f err;
+
+    Vector2f measure(const Vector2f &vel_true)
+    {
+        const float alpha = calc_lowpass_alpha_dt(LOOP_DT, 20.0f);
+        const float white = sigma * 2.7f;   // gives ~sigma rms after the 20Hz filter
+        accel_noise.x += alpha * (white * n(gen) - accel_noise.x);
+        accel_noise.y += alpha * (white * n(gen) - accel_noise.y);
+        err += (accel_noise - err) * LOOP_DT;
+        return vel_true + err;
+    }
+};
+
+struct ChatterStats {
+    float max_speed = 0.0f;
+    float max_tilt_step = 0.0f;     // largest one-loop change in commanded along-track tilt, rad
+    float toggles_per_s = 0.0f;
+};
+
+// hold full forward at the limit with a noisy velocity estimate, stats over the last 30s
+ChatterStats fly_noisy(SpeedLimiter &limiter, float accel_rms)
+{
+    PointMassCopter copter;
+    NoisyVelocity est(accel_rms);
+    const Quaternion pilot = attitude_deg(0, -30, 0);
+    ChatterStats s;
+    bool last_limited = false;
+    float last_tilt = 0.0f;
+    int toggles = 0;
+    const int steps = int(60.0f / LOOP_DT);
+    const int start = int(30.0f / LOOP_DT);
+    for (int i = 0; i < steps; i++) {
+        const Quaternion cmd = limiter.apply(pilot, est.measure(copter.vel));
+        const float tilt = tilt_along(cmd, copter.vel);
+        if (i > start) {
+            s.max_tilt_step = MAX(s.max_tilt_step, fabsf(tilt - last_tilt));
+            toggles += (limiter.limited != last_limited) ? 1 : 0;
+        }
+        last_tilt = tilt;
+        last_limited = limiter.limited;
+        copter.step(cmd);
+        s.max_speed = MAX(s.max_speed, copter.vel.length());
+    }
+    s.toggles_per_s = toggles / 30.0f;
+    return s;
+}
+
+}  // namespace
+
+TEST(SpeedLimitRobustness, HoldsLimitWithNoisyVelocity)
+{
+    SpeedLimiter limiter;
+    const ChatterStats s = fly_noisy(limiter, 1.0f);
+    EXPECT_LE(s.max_speed, LIMIT * 1.05f);
+}
+
+// Known issue: the D term works on the unfiltered derivative of the velocity estimate, so near
+// the limit IMU noise flips the limiter on and off and the attitude target jumps by up to the
+// full pilot tilt in one loop. Re-enable once there's a D/error filter default (ATC_SPD_LIM_FLTD).
+TEST(SpeedLimitRobustness, DISABLED_NoisyVelocityDoesNotChatter)
+{
+    SpeedLimiter limiter;
+    const ChatterStats s = fly_noisy(limiter, 1.0f);
+    EXPECT_LE(degrees(s.max_tilt_step), 2.0f);
+    EXPECT_LE(s.toggles_per_s, 1.0f);
+}
+
+TEST(SpeedLimitRobustness, FilteringDTermReducesChatter)
+{
+    SpeedLimiter unfiltered;
+    SpeedLimiter filtered;
+    filtered.pid.filt_D_hz().set(2.0f);
+    const ChatterStats a = fly_noisy(unfiltered, 1.0f);
+    const ChatterStats b = fly_noisy(filtered, 1.0f);
+    EXPECT_LT(b.max_tilt_step, 0.5f * a.max_tilt_step);
+    EXPECT_LT(b.toggles_per_s, 0.5f * a.toggles_per_s);
+    EXPECT_LE(b.max_speed, LIMIT * 1.05f);
+}
+
+// Known issue: the derating is applied after input shaping, so if the limiter comes on while
+// well above the limit (ATC_SPD_LIM_EN set in flight, velocity estimate coming back after a
+// dropout) the target steps straight to level in one loop, ignoring ATC_ACCEL_P/R_MAX.
+TEST(SpeedLimitRobustness, DISABLED_EngagingAboveLimitIsGradual)
+{
+    PointMassCopter copter;
+    fly(copter, nullptr, attitude_deg(0, -30, 0), 30);       // limiter off, well over the limit
+    ASSERT_GT(copter.vel.length(), 1.5f * LIMIT);
+    SpeedLimiter limiter;
+    const Quaternion pilot = attitude_deg(0, -30, 0);
+    float last_tilt = tilt_along(pilot, copter.vel);
+    for (int i = 0; i < int(1.0f / LOOP_DT); i++) {
+        const Quaternion cmd = limiter.apply(pilot, copter.vel);
+        const float tilt = tilt_along(cmd, copter.vel);
+        ASSERT_LE(degrees(fabsf(tilt - last_tilt)), 5.0f) << "step at loop " << i;
+        last_tilt = tilt;
+        copter.step(cmd);
+    }
+}
+
+TEST(SpeedLimitRobustness, BrakingIsNeverRestricted)
+{
+    // above the limit and the pilot pulls back: their braking tilt goes through untouched
+    PointMassCopter copter;
+    fly(copter, nullptr, attitude_deg(0, -30, 0), 30);
+    ASSERT_GT(copter.vel.length(), 1.5f * LIMIT);
+    SpeedLimiter limiter;
+    const Quaternion pilot = attitude_deg(0, 20, 0);
+    for (int i = 0; i < int(5.0f / LOOP_DT) && copter.vel.length() > 1.0f; i++) {
+        const Quaternion cmd = limiter.apply(pilot, copter.vel);
+        ASSERT_TRUE(quat_equal(cmd, pilot)) << "braking changed at v=" << copter.vel.length();
+        copter.step(cmd);
+    }
+}
+
+TEST(SpeedLimitRobustness, HeadwindDoesNotRestrictPenetration)
+{
+    // ground speed stays under the limit into a strong headwind, so full tilt is allowed
+    PointMassCopter copter;
+    copter.wind = vel_from_course(15, 180);
+    SpeedLimiter limiter;
+    const Quaternion pilot = attitude_deg(0, -30, 0);
+    for (int i = 0; i < int(40.0f / LOOP_DT); i++) {
+        const Quaternion cmd = limiter.apply(pilot, copter.vel);
+        ASSERT_TRUE(quat_equal(cmd, pilot)) << "limited at ground speed " << copter.vel.length();
+        copter.step(cmd);
+    }
+    EXPECT_LT(copter.vel.length(), LIMIT);
+}
+
+TEST(SpeedLimitRobustness, LoweringLimitInFlight)
+{
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
+    limiter.limit = 0.5f * LIMIT;
+    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
+    EXPECT_NEAR(s.mean_speed_last_10s, 0.5f * LIMIT, MEAN_TOL);
+}
+
+TEST(SpeedLimitRobustness, RaisingLimitInFlight)
+{
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    limiter.limit = 0.5f * LIMIT;
+    fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
+    limiter.limit = LIMIT;
+    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 40);
+    EXPECT_LE(s.max_speed, LIMIT * MAX_OVERSHOOT);
+    EXPECT_NEAR(s.mean_speed_last_10s, LIMIT, MEAN_TOL);
+}
+
+// These document parameter values that make the vehicle unusable. They pass today; they're
+// here so a pre-arm check can be added against them.
+TEST(SpeedLimitParams, ZeroLimitStopsTranslation)
+{
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    limiter.limit = 0.0f;
+    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
+    EXPECT_LT(s.final_speed, 0.5f);
+}
+
+TEST(SpeedLimitParams, ZeroGainsStopTranslation)
+{
+    PointMassCopter copter;
+    SpeedLimiter limiter;
+    limiter.pid.kP().set(0);
+    limiter.pid.kI().set(0);
+    limiter.pid.kD().set(0);
+    const RunStats s = fly(copter, &limiter, attitude_deg(0, -30, 0), 30);
+    EXPECT_LT(s.final_speed, 0.5f);
 }
 
 AP_GTEST_MAIN()
