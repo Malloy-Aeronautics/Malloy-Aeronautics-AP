@@ -169,14 +169,6 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_SUBGROUPINFO(_speed_limit_pid, "SPD_LIM_", 23, AC_AttitudeControl, AC_PID),
 
-    // @Param: SPD_LIM_MDA
-    // @DisplayName: Speed limit minimum derating angle
-    // @Description: Speed limit minimum derating angle.
-    // @Units: m/s
-    // @Range: 1.0 100.0
-    // @User: Standard
-    AP_GROUPINFO("SPD_LIM_MDR", 24, AC_AttitudeControl, _speed_limit_min_derating_angle, 0.0f),
-
     AP_GROUPEND
 };
 
@@ -720,14 +712,15 @@ void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_lim
     Quaternion attitude_body;
     _ahrs.get_quat_body_to_ned(attitude_body);
 
-    // Speed limit derated attitude target
+    // Speed limit derated attitude target.
+    // _attitude_target is persistent through loops while attitude_target_derated is scoped to this function.
     Quaternion attitude_target_derated = _attitude_target;
 
     // Check if speed limit enabled, if so run speed limiter
     if (_speed_limit_apply && mode_enable_speed_limit) {
         Vector3f vehicle_velocity;
         if (_ahrs.get_velocity_NED(vehicle_velocity)) {
-            attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value, _speed_limit_min_derating_angle,
+            attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value,
                                                          _attitude_target, vehicle_velocity.xy(), _speed_limit_active);
         }
     }
@@ -1222,43 +1215,46 @@ float AC_AttitudeControl::speed_limit_tilt_along_track(const Quaternion &attitud
     return atan2f(thrust_dir * track_dir, thrust_dir * earth_up);
 }
 
-bool AC_AttitudeControl::speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne,
-                                            float max_tilt_along_track, Quaternion &attitude_out)
+bool AC_AttitudeControl::speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne, float max_tilt_along_track, Quaternion &attitude_out)
 {
+    // Pass through attitude target by default
     attitude_out = attitude_target;
 
     const float speed = vel_ne.length();
+    // Validate inputs
     if (!isfinite(speed) || !isfinite(max_tilt_along_track) ||
         speed < AC_ATTITUDE_CONTROL_SPEED_LIMIT_MIN_SPEED) {
         return false;
     }
 
+    // Determine tilt from vertical in direction of vehicle track
     const float tilt = speed_limit_tilt_along_track(attitude_target, vel_ne);
     if (!isfinite(tilt) || tilt <= max_tilt_along_track) {
         return false;
     }
 
+    // Derating axis is normalized vehicle groundspeed vector rotated 90 degrees CCW
     const Vector3f derating_axis{vel_ne.y / speed, -vel_ne.x / speed, 0.0f};
     Quaternion correction;
     correction.from_axis_angle(derating_axis, max_tilt_along_track - tilt);
 
-    // axis is in earth frame so pre-multiply
+    // axis is in earth frame so pre-multiply to rotate attitude target
     attitude_out = correction * attitude_target;
     attitude_out.normalize();
     return true;
 }
 
-Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit, float min_derating_angle,
-                                                  const Quaternion &attitude_target, const Vector2f &vel_ne,
-                                                  bool &limiter_active)
+Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit, const Quaternion &attitude_target, const Vector2f &vel_ne, bool &limiter_active)
 {
-    // only let I grow while the limiter is doing something
+    // Only let I grow while the limiter is doing something.
     float derating_angle = pid.update_all(speed_limit, vel_ne.length(), !limiter_active);
-    derating_angle = constrain_float(derating_angle, min_derating_angle, M_PI);
+    // Ensure derating angle is between 0 and PI (flipped 180 degrees forwards from vertical)
+    derating_angle = constrain_float(derating_angle, 0.0f, M_PI);
 
     Quaternion attitude_out;
     limiter_active = speed_limit_derate(attitude_target, vel_ne, derating_angle, attitude_out);
     if (!limiter_active) {
+        // Relax (decay) integrator when limiter is not active
         pid.relax_integrator(0.0f, 1.0f);
     }
     return attitude_out;
