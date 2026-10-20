@@ -1247,10 +1247,15 @@ bool AC_AttitudeControl::speed_limit_derate(const Quaternion &attitude_target, c
 Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit, const Quaternion &attitude_target, const Vector2f &vel_ne, bool &limiter_active)
 {
     // Only let I grow while the limiter is doing something.
+    const float i_before = pid.get_i();
     float derating_angle = pid.update_all(speed_limit, vel_ne.length(), !limiter_active);
-    // Ensure derating angle is between 0 and PI (flipped 180 degrees forwards from vertical)
+    if (derating_angle < 0.0f && pid.get_i() < i_before) {
+        // Output is pinned at the clamp (e.g. a tailwind faster than the limit). Winding I further
+        // down does nothing now and holds the vehicle back once the wind drops.
+        pid.set_integrator(i_before);
+    }
+    // Ensure derating angle is between 0 and PI
     derating_angle = constrain_float(derating_angle, 0.0f, M_PI);
-
     Quaternion attitude_out;
     limiter_active = speed_limit_derate(attitude_target, vel_ne, derating_angle, attitude_out);
     if (!limiter_active) {
