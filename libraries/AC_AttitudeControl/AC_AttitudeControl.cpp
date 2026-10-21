@@ -719,7 +719,10 @@ void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_lim
     // Check if speed limit enabled, if so run speed limiter
     if (_speed_limit_apply && mode_enable_speed_limit && !_speed_limit_override) {
         Vector3f vehicle_velocity;
-        if (_ahrs.get_velocity_NED(vehicle_velocity)) {
+        Location vehicle_location;
+        // Check that vehicle velocity and location are valid
+        // If absolute position and velocity are not valid get_location returns false (GPS 3D fix loss)
+        if (_ahrs.get_velocity_NED(vehicle_velocity) && _ahrs.get_location(vehicle_location)) {
             attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value,
                                                          _attitude_target, vehicle_velocity.xy(), _speed_limit_active);
         }
