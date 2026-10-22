@@ -148,6 +148,25 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("INPUT_TC", 20, AC_AttitudeControl, _input_tc, AC_ATTITUDE_CONTROL_INPUT_TC_DEFAULT),
 
+    // @Param: SPD_LIM_EN
+    // @DisplayName: Speed limit enable
+    // @Description: Speed limit enable flag. Enables PD controller for constraining speed in all flight modes.
+    // @Range: 0 1
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_EN", 21, AC_AttitudeControl, _speed_limit_apply, 0),
+
+    // @Param: SPD_LIM_VAL
+    // @DisplayName: Speed limit value
+    // @Description: Speed limit value. Enforced when SPEED_LIMIT_APPLY is set to 1.
+    // @Units: m/s
+    // @Range: 1.0 100.0
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_VAL", 22, AC_AttitudeControl, _speed_limit_value, 20.0f),
+
+    // @Group: SPD_LIM_
+    // @Path: ../AC_PID/AC_PID.cpp
+    AP_SUBGROUPINFO(_speed_limit_pid, "SPD_LIM_", 23, AC_AttitudeControl, AC_PID),
+
     AP_GROUPEND
 };
 
@@ -447,7 +466,7 @@ void AC_AttitudeControl::input_rate_bf_roll_pitch_yaw(float roll_rate_bf_cds, fl
     }
 
     // Call quaternion attitude controller
-    attitude_controller_run_quat();
+    attitude_controller_run_quat(false);
 }
 
 // Command an angular velocity with angular velocity smoothing using rate loops only with no attitude loop stabilization
@@ -685,15 +704,35 @@ Quaternion AC_AttitudeControl::attitude_from_thrust_vector(Vector3f thrust_vecto
 }
 
 // Calculates the body frame angular velocities to follow the target attitude
-void AC_AttitudeControl::attitude_controller_run_quat()
+void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_limit)
 {
     // This represents a quaternion rotation in NED frame to the body
     Quaternion attitude_body;
     _ahrs.get_quat_body_to_ned(attitude_body);
 
+    // Speed limit derated attitude target.
+    // _attitude_target is persistent through loops while attitude_target_derated is scoped to this function.
+    Quaternion attitude_target_derated = _attitude_target;
+
+    // Check if speed limit enabled, if so run speed limiter
+    if (_speed_limit_apply && mode_enable_speed_limit && !_speed_limit_override) {
+        Vector3f vehicle_velocity;
+        Location vehicle_location;
+        // Check that vehicle velocity and location are valid
+        // If absolute position and velocity are not valid get_location returns false (GPS 3D fix loss)
+        if (_ahrs.get_velocity_NED(vehicle_velocity) && _ahrs.get_location(vehicle_location)) {
+            attitude_target_derated = speed_limit_update(_speed_limit_pid, _speed_limit_value,
+                                                         _attitude_target, vehicle_velocity.xy(), _speed_limit_active);
+        }
+    }
+    else {
+        _speed_limit_active = false;
+        _speed_limit_pid.reset_I();
+    }
+
     // This vector represents the angular error to rotate the thrust vector using x and y and heading using z
     Vector3f attitude_error;
-    thrust_heading_rotation_angles(_attitude_target, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
+    thrust_heading_rotation_angles(attitude_target_derated, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
 
     // Compute the angular velocity corrections in the body frame from the attitude error
     _ang_vel_body = update_ang_vel_target_from_att_error(attitude_error);
@@ -702,7 +741,7 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     ang_vel_limit(_ang_vel_body, radians(_ang_vel_roll_max), radians(_ang_vel_pitch_max), radians(_ang_vel_yaw_max));
 
     // rotation from the target frame to the body frame
-    Quaternion rotation_target_to_body = attitude_body.inverse() * _attitude_target;
+    Quaternion rotation_target_to_body = attitude_body.inverse() * attitude_target_derated;
 
     // target angle velocity vector in the body frame
     Vector3f ang_vel_body_feedforward = rotation_target_to_body * _ang_vel_target;
@@ -733,7 +772,7 @@ void AC_AttitudeControl::attitude_controller_run_quat()
     _attitude_target.normalize();
 
     // Record error to handle EKF resets
-    _attitude_ang_error = attitude_body.inverse() * _attitude_target;
+    _attitude_ang_error = attitude_body.inverse() * attitude_target_derated;
 }
 
 // thrust_heading_rotation_angles - calculates two ordered rotations to move the attitude_body quaternion to the attitude_target quaternion.
@@ -1164,4 +1203,63 @@ void AC_AttitudeControl::get_rpy_srate(float &roll_srate, float &pitch_srate, fl
     roll_srate = get_rate_roll_pid().get_pid_info().slew_rate;
     pitch_srate = get_rate_pitch_pid().get_pid_info().slew_rate;
     yaw_srate = get_rate_yaw_pid().get_pid_info().slew_rate;
+}
+float AC_AttitudeControl::speed_limit_tilt_along_track(const Quaternion &attitude, const Vector2f &vel_ne)
+{
+    const float speed = vel_ne.length();
+    if (!is_positive(speed)) {
+        return 0.0f;
+    }
+    const Vector3f track_dir{vel_ne.x / speed, vel_ne.y / speed, 0.0f};
+    const Vector3f earth_up{0.0f, 0.0f, -1.0f};
+    const Vector3f thrust_dir = attitude * earth_up;
+    return atan2f(thrust_dir * track_dir, thrust_dir * earth_up);
+}
+
+bool AC_AttitudeControl::speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne, float max_tilt_along_track, Quaternion &attitude_out)
+{
+    // Pass through attitude target by default
+    attitude_out = attitude_target;
+
+    const float speed = vel_ne.length();
+    // Validate inputs
+    if (!isfinite(speed) || !isfinite(max_tilt_along_track) ||
+        speed < AC_ATTITUDE_CONTROL_SPEED_LIMIT_MIN_SPEED) {
+        return false;
+    }
+
+    // Determine tilt from vertical in direction of vehicle track
+    const float tilt = speed_limit_tilt_along_track(attitude_target, vel_ne);
+    if (!isfinite(tilt) || tilt <= max_tilt_along_track) {
+        return false;
+    }
+
+    // Derating axis is normalized vehicle groundspeed vector rotated 90 degrees CCW
+    const Vector3f derating_axis{vel_ne.y / speed, -vel_ne.x / speed, 0.0f};
+    Quaternion correction;
+    correction.from_axis_angle(derating_axis, max_tilt_along_track - tilt);
+
+    // axis is in earth frame so pre-multiply to rotate attitude target
+    attitude_out = correction * attitude_target;
+    attitude_out.normalize();
+    return true;
+}
+
+Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit, const Quaternion &attitude_target, const Vector2f &vel_ne, bool &limiter_active)
+{
+    // Only let I grow while the limiter is doing something.
+    float derating_angle = pid.update_all(speed_limit, vel_ne.length(), !limiter_active);
+    // Ensure that the I term can only be positive
+    if (pid.get_i() < 0.0f) pid.set_integrator(0.0f);
+
+    // Ensure derating angle is between 0 and PI
+    derating_angle = constrain_float(derating_angle, 0.0f, M_PI);
+
+    Quaternion attitude_out;
+    limiter_active = speed_limit_derate(attitude_target, vel_ne, derating_angle, attitude_out);
+
+    // Relax (decay) integrator when limiter is not active
+    if (!limiter_active) pid.relax_integrator(0.0f, 1.0f);
+
+    return attitude_out;
 }

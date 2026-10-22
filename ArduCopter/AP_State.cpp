@@ -58,6 +58,11 @@ void Copter::set_failsafe_radio(bool b)
             // ----------------------------
             failsafe_radio_off_event();
         }else{
+            // re-enable on failsafe, the pilot can't reach the switch
+            if (attitude_control->get_speed_limit_override()) {
+                attitude_control->set_speed_limit_override(false);
+                gcs().send_text(MAV_SEVERITY_WARNING, "Speed limiter ON (radio failsafe)");
+            }
             // We've lost radio contact
             // ------------------------
             failsafe_radio_on_event();
