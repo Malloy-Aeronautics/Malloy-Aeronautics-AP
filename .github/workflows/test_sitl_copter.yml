@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - MA-4.3.0.X
+      - 'feature/**'
     paths-ignore:
       # remove other vehicles
       - 'AntennaTracker/**'
@@ -269,9 +270,9 @@ jobs:
             python3 -m pip install --upgrade \
               pymavlink==2.4.49 \
               MAVProxy==1.8.74
-            
+
             python3 -m pip freeze | grep -E "MAVProxy|pymavlink"
-            
+
             PATH="/github/home/.local/bin:$PATH"
             Tools/scripts/build_ci.sh
 

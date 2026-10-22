@@ -1259,10 +1259,9 @@ Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit
 
     Quaternion attitude_out;
     limiter_active = speed_limit_derate(attitude_target, vel_ne, derating_angle, attitude_out);
-    
+
     // Relax (decay) integrator when limiter is not active
     if (!limiter_active) pid.relax_integrator(0.0f, 1.0f);
 
     return attitude_out;
 }
- 

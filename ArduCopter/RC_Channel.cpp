@@ -103,7 +103,7 @@ void RC_Channel_Copter::init_aux_function(const aux_func_t ch_option, const AuxS
     case AUX_FUNC::SIMPLE_HEADING_RESET:
     case AUX_FUNC::ARMDISARM_AIRMODE:
     case AUX_FUNC::TURBINE_START:
-    case AUX_FUNC::SPEED_LIMIT_OVERRIDE: 
+    case AUX_FUNC::SPEED_LIMIT_OVERRIDE:
         break;
     case AUX_FUNC::ACRO_TRAINER:
     case AUX_FUNC::ATTCON_ACCEL_LIM:
@@ -586,7 +586,7 @@ bool RC_Channel_Copter::do_aux_function(const aux_func_t ch_option, const AuxSwi
         case AUX_FUNC::FORCEFLYING:
             do_aux_function_change_force_flying(ch_flag);
             break;
-        
+
         case AUX_FUNC::SPEED_LIMIT_OVERRIDE: {
             const bool override = (ch_flag == AuxSwitchPos::HIGH);
             copter.attitude_control->set_speed_limit_override(override);
