@@ -561,6 +561,13 @@ private:
 #endif
     void do_nav_attitude_time(const AP_Mission::Mission_Command& cmd);
 
+public:
+
+	bool is_takeoff_complete() { return verify_takeoff(); }
+	bool is_land_complete() { return verify_land(); }
+
+private:
+
     bool verify_takeoff();
     bool verify_land();
     bool verify_payload_place();
