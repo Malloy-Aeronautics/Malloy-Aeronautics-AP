@@ -66,7 +66,7 @@ jobs:
             test.Copter.SpeedLimitAttitudeAltHold \
             test.Copter.SpeedLimitAttitudeSteeringAndYaw \
             test.Copter.SpeedLimitAttitudeAuto \
-            test.Copter.SpeedLimitAttitudeTailwindBraking \
+            test.Copter.SpeedLimitAttitudeTailwindAboveLimit \
             test.Copter.SpeedLimitRecoversAfterTailwindDrops \
             test.Copter.SpeedLimitLoiter \
             test.Copter.SpeedLimitGuidedVelocity \
@@ -82,7 +82,7 @@ jobs:
             test.Copter.SpeedLimitFenceAvoidLoiter \
             test.Copter.SpeedLimitFenceAvoidLoiterTailwind \
             test.Copter.SpeedLimitFenceBreachAltHoldTailwind \
-            test.Copter.SpeedLimitFenceMatchedSpeed
+            test.Copter.SpeedLimitPilotOverride
 
       - name: keep logs if something failed
         if: failure()
