@@ -163,10 +163,8 @@ const AP_Param::GroupInfo AC_AttitudeControl::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("SPD_LIM_VAL", 22, AC_AttitudeControl, _speed_limit_value, 20.0f),
 
-    // @Param: SPD_LIM_
-    // @DisplayName: Speed limit PID
-    // @Description: Speed limit PID.
-    // @User: Standard
+    // @Group: SPD_LIM_
+    // @Path: ../AC_PID/AC_PID.cpp
     AP_SUBGROUPINFO(_speed_limit_pid, "SPD_LIM_", 23, AC_AttitudeControl, AC_PID),
 
     AP_GROUPEND
