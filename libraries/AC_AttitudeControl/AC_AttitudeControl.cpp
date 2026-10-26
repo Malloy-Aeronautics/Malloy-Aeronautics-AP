@@ -732,6 +732,8 @@ void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_lim
 
     // This vector represents the angular error to rotate the thrust vector using x and y and heading using z
     Vector3f attitude_error;
+    // Ensure _attitude_target yaw error is clamped, then perform the same operation on the derated target used for control output.
+    thrust_heading_rotation_angles(_attitude_target, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
     thrust_heading_rotation_angles(attitude_target_derated, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
 
     // Compute the angular velocity corrections in the body frame from the attitude error
