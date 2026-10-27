@@ -1,12 +1,129 @@
 #!/usr/bin/env bash
-# Runs the quick local CI before every push. Skip it with:  git push --no-verify
+# Before a push, checks whether the local CI has passed on the commits being pushed. If it
+# hasn't, asks whether to run it now, push anyway or cancel, and shows the command to run it.
+#
+# Answer without being asked:   MA_LOCAL_CI=quick git push    (or full / skip)
+# Skip the hook altogether:     git push --no-verify
+#
+# A run counts once Tools/scripts/ma_local_ci.sh passes on a clean working tree. Runs in the
+# WSL clone count for pushes from Windows too, as long as that clone is set up as a remote
+# with a plain path (like the "ubuntu" remote).
 
-root="$(git rev-parse --show-toplevel)"
+root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
 
-if [ "$(uname -s)" != "Linux" ]; then
-    echo "pre-push: not on Ubuntu, local CI skipped (push from WSL to have it run)"
+# git passes one line per ref on stdin: <local ref> <local sha> <remote ref> <remote sha>
+shas=()
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+    [[ "$local_sha" =~ ^0+$ ]] && continue                 # deleting a branch
+    [[ "$local_ref" == refs/tags/* ]] && continue          # tags point at commits already tested
+    shas+=("$local_sha")
+done
+[ ${#shas[@]} -eq 0 ] && exit 0
+
+# every file a passing run may have been recorded in
+stamp_files() {
+    git rev-parse --git-path ma_local_ci.passed
+    git remote | while read -r name; do
+        url="$(git remote get-url "$name" 2>/dev/null)"
+        case "$url" in
+            *://*|*@*:*|"") ;;                              # a server, not another clone
+            *) echo "$url/.git/ma_local_ci.passed" ;;
+        esac
+    done
+}
+
+passed() {
+    local f
+    while read -r f; do
+        [ -f "$f" ] && grep -q "^$1 " "$f" && return 0
+    done < <(stamp_files)
+    return 1
+}
+
+untested=()
+for sha in "${shas[@]}"; do
+    passed "$sha" || untested+=("$sha")
+done
+if [ ${#untested[@]} -eq 0 ]; then
+    echo "pre-push: local CI already passed on $(git rev-parse --short "${shas[0]}")"
     exit 0
 fi
 
-exec Tools/scripts/ma_local_ci.sh
+on_linux=0
+[ "$(uname -s)" = "Linux" ] && on_linux=1
+head_sha="$(git rev-parse HEAD)"
+
+echo
+echo "Local CI hasn't passed on:"
+for sha in "${untested[@]}"; do
+    echo "    $(git log -1 --format='%h %s' "$sha")"
+done
+echo
+echo "To run it yourself (Ubuntu/WSL, repo root, on that commit, Python 3.10 venv active):"
+echo "    Tools/scripts/ma_local_ci.sh           quick: lint, SITL build, unit tests, param docs (~10 min)"
+echo "    Tools/scripts/ma_local_ci.sh --full    adds the board builds and the MA autotests (30+ min)"
+echo
+
+choice="${MA_LOCAL_CI:-}"
+if [ -z "$choice" ]; then
+    # git hooks get git's stdin, so ask on the terminal directly. GUI clients have no
+    # terminal: remind and carry on, the CI on the pull request still runs.
+    if ! { exec 3</dev/tty; } 2>/dev/null; then
+        echo "pre-push: no terminal to ask on, pushing without local CI"
+        exit 0
+    fi
+    if [ $on_linux -eq 1 ]; then
+        echo "  q  run the quick checks now"
+        echo "  f  run the full checks now"
+        echo "  s  push without running them"
+        echo "  n  cancel the push"
+        printf "Choice [q]: "
+        read -r -u 3 answer
+        answer="${answer:-q}"
+    else
+        echo "This isn't Ubuntu, so the checks can't run from here."
+        echo "  s  push without running them"
+        echo "  n  cancel the push (then run them in Ubuntu)"
+        printf "Choice [n]: "
+        read -r -u 3 answer
+        answer="${answer:-n}"
+    fi
+    exec 3<&-
+    case "$answer" in
+        q|Q) choice=quick ;;
+        f|F) choice=full ;;
+        s|S) choice=skip ;;
+        *)   choice=cancel ;;
+    esac
+fi
+
+case "$choice" in
+    skip)
+        echo "pre-push: pushing without local CI"
+        exit 0
+        ;;
+    quick|full)
+        if [ $on_linux -eq 0 ]; then
+            echo "pre-push: the local CI needs Ubuntu (WSL), push cancelled"
+            exit 1
+        fi
+        # the script tests the working tree, so it has to be the commit being pushed
+        if [ "${untested[0]}" != "$head_sha" ] || [ ${#untested[@]} -gt 1 ]; then
+            echo "pre-push: the commit being pushed isn't the one checked out here."
+            echo "Check it out, run the local CI, then push again. Push cancelled."
+            exit 1
+        fi
+        flag=""
+        [ "$choice" = "full" ] && flag="--full"
+        if Tools/scripts/ma_local_ci.sh $flag; then
+            exit 0
+        fi
+        echo "pre-push: local CI failed, push cancelled (fix it, or MA_LOCAL_CI=skip git push)"
+        exit 1
+        ;;
+    *)
+        echo "pre-push: push cancelled"
+        exit 1
+        ;;
+esac
