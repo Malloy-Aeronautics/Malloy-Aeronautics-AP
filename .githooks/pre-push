@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Runs the quick local CI before every push. Skip it with:  git push --no-verify
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root" || exit 1
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "pre-push: not on Ubuntu, local CI skipped (push from WSL to have it run)"
+    exit 0
+fi
+
+exec Tools/scripts/ma_local_ci.sh
