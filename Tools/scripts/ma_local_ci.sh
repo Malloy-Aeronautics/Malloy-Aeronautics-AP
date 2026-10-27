@@ -78,4 +78,12 @@ fi
 # param_parse writes its output files into the repo root, tidy them up
 rm -f Parameters*.rst Parameters*.html Parameters*.md apm.pdef.xml apm.pdef.json 2>/dev/null || true
 
-echo "all local checks passed"
+# remember which commit passed, so the pre-push hook doesn't ask again for it
+if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+    mode=quick
+    [ $FULL -eq 1 ] && mode=full
+    echo "$(git rev-parse HEAD) $mode $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$(git rev-parse --git-path ma_local_ci.passed)"
+    echo "all local checks passed, recorded for $(git rev-parse --short HEAD)"
+else
+    echo "all local checks passed (not recorded: there are uncommitted changes, so this wasn't a test of a commit)"
+fi
