@@ -1,13 +1,17 @@
 name: MA CI
 
-# All the MA checks in one workflow: lint, SITL build and unit tests, and the flight controller
-# builds. Runs on pull requests into a release branch and on pushes to feature and release
-# branches; a push to a branch that has an open pull request leaves it to the pull request run.
-# ci-passed waits for all of them.
+# All the MA checks in one workflow, replacing ma_lint.yml and ma_board_builds.yml.
+# Runs once per change: on pull requests into a release branch, and on pushes to a release
+#   changes are that the lint will run for both sitl and board checks
+#   ci-passed waits for all of them
+
+#   changes to check for lint on sitl and the board compilation
+
 
 on:
   push:
     branches:
+      - 'feature/**'
       - 'release/**'
   pull_request:
     branches:

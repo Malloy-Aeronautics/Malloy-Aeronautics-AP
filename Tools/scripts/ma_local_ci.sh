@@ -67,22 +67,15 @@ if [ $FULL -eq 1 ]; then
     done
     # put SITL back so the autotests use it
     step "reconfigure sitl"      ./waf configure --board sitl
-    # the speed limiter tests. The release branch before the speed limiter is merged has none,
-    # so the step is skipped there rather than running autotest.py with nothing to do
-    speed_tests="$(grep -oE 'def SpeedLimit[A-Za-z0-9_]+\(self' Tools/autotest/arducopter.py \
-                   | sed -E 's/def ([A-Za-z0-9_]+)\(self/test.Copter.\1/' | sort -u | tr '\n' ' ' || true)"
-    if [ -n "$speed_tests" ]; then
-        step "speed limiter autotests" bash -c "cd Tools/autotest && python3 autotest.py --no-clean $speed_tests"
-    else
-        echo "speed limiter autotests                 none on this branch, skipped"
-    fi
+    step "speed limiter autotests" bash -c \
+        "cd Tools/autotest && python3 autotest.py --no-clean \$(python3 -c \"
+import re
+s = open('arducopter.py').read()
+print(' '.join('test.Copter.' + n for n in sorted(set(re.findall(r'def (SpeedLimit\w+)\(self', s)))))
+\")"
 fi
 
 # param_parse writes its output files into the repo root, tidy them up
 rm -f Parameters*.rst Parameters*.html Parameters*.md apm.pdef.xml apm.pdef.json 2>/dev/null || true
 
-if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "all local checks passed for $(git rev-parse --short HEAD)"
-else
-    echo "all local checks passed, including uncommitted changes"
-fi
+echo "all local checks passed"
