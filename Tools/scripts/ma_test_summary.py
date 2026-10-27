@@ -44,9 +44,9 @@ def main():
         rows.append((binary, tests, failed, disabled, "failed" if failed else "ok"))
         for case in root.iter("testcase"):
             for failure in case.findall("failure"):
-                first_line = (failure.get("message") or "").strip().splitlines()[:1]
-                failures.append("%s: %s.%s %s" % (binary, case.get("classname"), case.get("name"),
-                                                   first_line[0] if first_line else ""))
+                lines = (failure.get("message") or "").strip().splitlines()
+                message = lines[0] if lines else ""
+                failures.append("%s: %s.%s %s" % (binary, case.get("classname"), case.get("name"), message))
 
     print("### Unit tests")
     print()
