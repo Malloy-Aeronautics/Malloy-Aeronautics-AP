@@ -1,0 +1,295 @@
+name: MA CI
+
+# All the MA checks in one workflow, replacing ma_lint.yml and ma_board_builds.yml.
+# Runs once per change: on pull requests into a release branch, and on pushes to a release
+#   changes are that the lint will run for both sitl and board checks
+#   ci-passed waits for all of them
+
+#   changes to check for lint on sitl and the board compilation
+
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'release/**'
+  pull_request:
+    branches:
+      - 'release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # one run per PR, or per branch for pushes. A newer push cancels the older run, except on
+  # release branches, where every commit that lands gets its own result.
+  group: ma-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/release/') }}
+
+env:
+  # on a PR compare with the branch it targets, otherwise with the current release branch
+  LINT_BASE: origin/${{ github.base_ref || 'release/MA-4.3.0.17' }}
+  ACTIONLINT_VERSION: '1.7.7'
+
+jobs:
+  changes:
+    # decides whether this run does anything: a push to a branch with an open PR leaves it to
+    # the PR run, and a change to documentation only skips the builds
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read      # to look for an open PR from this branch
+    outputs:
+      run: ${{ steps.pr.outputs.run }}
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: open pull request for this branch
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "push" ] && [[ "$BRANCH" != release/* ]]; then
+            open="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number,baseRefName \
+                    --jq '[.[] | select(.baseRefName | startswith("release/"))] | length')"
+            if [ "$open" -gt 0 ]; then
+              echo "::notice::$BRANCH has an open pull request, its pull request run tests this commit"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: changed files
+        id: diff
+        if: steps.pr.outputs.run == 'true'
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "push" ] && [[ "$BRANCH" == release/* ]]; then
+            # what this push added to the release branch. After a force push the old tip is
+            # gone, and then there's nothing safe to compare with, so build everything.
+            if [[ "$BEFORE" =~ ^0*$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              echo "code=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            base="$BEFORE"
+          elif [ "$EVENT" = "push" ] || [ "$EVENT" = "pull_request" ]; then
+            # everything the branch changes since it left release, so a docs-only push on a
+            # branch with code changes still builds, and force pushes don't matter
+            base="$(git merge-base "$LINT_BASE" HEAD)"
+          else
+            # started by hand: build everything
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$base" HEAD | tee changed.txt
+          if grep -qvE '\.(md|rst|txt)$' changed.txt; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "only documentation changed, skipping the builds"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # full history so the merge base with the release branch exists
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: install linters
+        run: |
+          python -m pip install flake8==7.1.1 lxml
+          curl -sSL -o actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar xzf actionlint.tgz actionlint
+          sudo mv actionlint /usr/local/bin/
+
+      - name: lint changed lines
+        run: python Tools/scripts/ma_lint.py --base "$LINT_BASE"
+
+      # cheap, so it lives here rather than in its own container
+      - name: check copter parameter documentation
+        if: needs.changes.outputs.code == 'true'
+        run: python Tools/autotest/param_metadata/param_parse.py --vehicle ArduCopter
+
+  sitl:
+    needs: [changes, lint]
+    if: needs.changes.outputs.run == 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container:
+      image: ardupilot/ardupilot-dev-base:v0.1.3
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: 'recursive'
+
+      # waf in this 4.3 tree only runs on Python 3.10 or older (it uses the old imp
+      # module and 'rU' file mode), and the dev images ship 3.12
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: python packages for the build
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan
+
+      - name: ccache timestamp
+        id: ccache_ts
+        shell: bash
+        run: echo "timestamp=$(date -u +%F-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ma-ci-ccache-sitl-${{ steps.ccache_ts.outputs.timestamp }}
+          restore-keys: ma-ci-ccache-sitl-
+
+      - name: build copter SITL
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . .github/workflows/ccache.env
+          python ./waf configure --board sitl
+          python ./waf copter 2>&1 | tee build.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ccache -s
+
+      - name: compiler warnings on changed lines
+        run: python Tools/scripts/ma_lint.py --base "$LINT_BASE" --build-log build.log
+
+      - name: unit tests
+        shell: bash
+        run: |
+          # every gtest binary writes a JUnit-style XML file in here. Set inside the step because
+          # in a container job github.workspace is the host path, not the one the container sees
+          export GTEST_OUTPUT="xml:$GITHUB_WORKSPACE/test-results/"
+          . .github/workflows/ccache.env
+          python ./waf check
+          ccache -s
+
+      - name: unit test summary
+        if: always()
+        run: python Tools/scripts/ma_test_summary.py test-results >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  boards:
+    needs: [changes, lint]
+    if: needs.changes.outputs.run == 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container: ardupilot/ardupilot-dev-chibios:v0.1.3
+    strategy:
+      fail-fast: false
+      matrix:
+        # must match the boards built in build_release_firmware.yml
+        # (CubeOrange is the hwdef used for the CubeBlue flight controller)
+        board: [
+          CubeOrange,
+          mRoControlZeroOEMH7,
+        ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: python packages for the build
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan
+
+      - name: ccache timestamp
+        id: ccache_ts
+        shell: bash
+        run: echo "timestamp=$(date -u +%F-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ma-ci-ccache-${{ matrix.board }}-${{ steps.ccache_ts.outputs.timestamp }}
+          restore-keys: ma-ci-ccache-${{ matrix.board }}-
+
+      - name: build copter for ${{ matrix.board }}
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . .github/workflows/ccache.env
+          python ./waf configure --board ${{ matrix.board }}
+          python ./waf copter
+          ccache -s
+
+      - name: flash and RAM usage
+        shell: bash
+        run: |
+          arm-none-eabi-size build/${{ matrix.board }}/bin/arducopter | tee size.txt
+          {
+            echo "### ${{ matrix.board }}"
+            echo '```'
+            cat size.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arducopter-${{ matrix.board }}
+          path: |
+            build/${{ matrix.board }}/bin/arducopter.apj
+            build/${{ matrix.board }}/bin/arducopter_with_bl.hex
+          if-no-files-found: error
+          retention-days: 14
+
+  ci-passed:
+    # the one check to require in the release branch rules ("ci-passed", the pull request
+    # result). Skipped jobs count as passed, so a documentation-only PR can still be merged.
+    name: ${{ github.event_name == 'pull_request' && 'ci-passed' || 'ci-passed (push)' }}
+    needs: [changes, lint, sitl, boards]
+    # not at all when the push run handed over to the PR run
+    if: always() && needs.changes.outputs.run != 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: all MA checks passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "a required job finished with: $r"
+              exit 1
+            fi
+          done
