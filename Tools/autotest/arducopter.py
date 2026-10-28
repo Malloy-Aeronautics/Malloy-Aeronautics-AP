@@ -9345,10 +9345,11 @@ class AutoTestCopter(AutoTest):
         return max(1500, int(150 * self.SPEED_LIMIT))
 
     def _speed_limit_loiter_fast(self):
-        '''LOITER fast enough that the limiter is what holds it back
-        (the T150's 20 deg LOIT_ANG_MAX can't reach 25 m/s)'''
-        self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms(),
-                             "LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
+        '''LOITER fast enough that the limiter is what holds it back. The T150's 20 deg
+        LOIT_ANG_MAX can't reach 25 m/s, so above 20 m/s it gets the full ANGLE_MAX'''
+        self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms()})
+        if self.SPEED_LIMIT > 20:
+            self.set_parameters({"LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
 
     def _speed_limit_well_over(self):
         '''clearly over the limit, without asking more than the airframe's top speed'''
@@ -9427,8 +9428,8 @@ class AutoTestCopter(AutoTest):
                                        (what, w.min_true, limit))
 
     def _speed_limit_tailwind_over(self):
-        '''a tailwind that pushes it well past the limit'''
-        return self.SPEED_LIMIT + max(3, 0.3 * self.SPEED_LIMIT)
+        '''a tailwind that pushes it past the limit, but stays under the T150's top speed at 25 m/s'''
+        return self.SPEED_LIMIT + max(3, 0.15 * self.SPEED_LIMIT)
 
     def _speed_limit_tailwind(self, speed):
         '''wind from behind (SIM_WIND_DIR is where it comes from)'''
@@ -9864,8 +9865,9 @@ class AutoTestCopter(AutoTest):
         max_d, breached, w = self._speed_limit_fly_at_fence('ALT_HOLD', radius, 40, tailwind=self._speed_limit_tailwind_over())
         if not breached:
             raise NotAchievedException("no fence breach")
-        if w.max_true < 1.1 * self.SPEED_LIMIT:
-            raise NotAchievedException("tailwind didn't take it over the limit, not testing the hard case")
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
+            raise NotAchievedException("tailwind didn't take it over the limit (%.2f m/s), not testing the hard case" %
+                                       w.max_true)
         # reported only, the SORA case covers the wind limit
         self.progress("tailwind fence overshoot: %.1fm at %.2f m/s" % (max_d - radius, w.max_true))
         self.wait_mode('LAND' if max_d - radius > 100 else 'RTL', timeout=10)
