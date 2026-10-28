@@ -9295,13 +9295,75 @@ class AutoTestCopter(AutoTest):
         self.clear_fence()
         self.disarm_vehicle(force=True)
 
-    SPEED_LIMIT = 5.0          # m/s
-    SPEED_MAX = 1.03           # true speed may go at most 3% over the limit (correct code peaks at 5.04)
-    SPEED_MIN = 0.95           # and has to reach at least 95% of it (correct code holds 4.86-5.00)
-    STICK_SNAP_RATE = 125.0    # deg/s, pitch rate from snapping full forward stick to centre at ~10 m/s
-    # m past the fence allowed at the limit. Set this from the SORA containment buffer.
-    # SITL gives ~7.7m in still air and ~10m with an 8 m/s tailwind.
-    FENCE_OVERSHOOT_MAX = 10.0
+    # set MA_SPEED_LIMIT and MA_SPEED_LIMIT_FRAME to fly these at another limit or airframe
+    SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT", "5"))
+    SPEED_MAX = 1.03           # up to 3% over the limit
+    SPEED_MIN = 0.95           # and at least 95% of it
+    GUST_MAX = 1.08            # gusts get more room, the limiter can't see them coming
+    STICK_SNAP_RATE = 125.0    # deg/s, centring the stick from full forward
+    # metres past the fence, from the SORA containment buffer. Only checked at 5 m/s
+    FENCE_OVERSHOOT_MAX = 10.0 if SPEED_LIMIT == 5 else None
+    # SITL frame and model/param file name in models/
+    SPEED_LIMIT_FRAMES = {
+        "T150": ("octa-quad", "T150_sim"),
+    }
+
+    def _speed_limit_frame(self):
+        '''fly on MA_SPEED_LIMIT_FRAME, with its fence off (the fence tests set their own)'''
+        name = os.environ.get("MA_SPEED_LIMIT_FRAME", "")
+        if not name:
+            return
+        if name not in self.SPEED_LIMIT_FRAMES:
+            raise NotAchievedException("unknown MA_SPEED_LIMIT_FRAME %s" % name)
+        frame, model = self.SPEED_LIMIT_FRAMES[name]
+        defaults = [util.reltopdir(os.path.join(testdir, "default_params", "copter.parm")),
+                    util.reltopdir(os.path.join(testdir, "models", model + ".param"))]
+        self.customise_SITL_commandline(
+            ["--defaults", ",".join(defaults)],
+            model="%s:@ROMFS/models/%s.json" % (frame, model),
+            wipe=True,
+        )
+        self.set_parameters({"FENCE_ENABLE": 0, "AVOID_ENABLE": 0})
+
+    def _speed_limit_scaled(self):
+        '''anything other than the stock quad at 5 m/s'''
+        return self.SPEED_LIMIT != 5 or os.environ.get("MA_SPEED_LIMIT_FRAME", "") != ""
+
+    def _speed_limit_setup(self):
+        '''airframe, nav speeds above the limit, and gains from MA_SPEED_LIMIT_PID'''
+        frame = os.environ.get("MA_SPEED_LIMIT_FRAME", "") or "the stock quad"
+        self.progress("speed limit %.1f m/s on %s" % (self.SPEED_LIMIT, frame))
+        self._speed_limit_frame()
+        if self._speed_limit_scaled():
+            self.set_parameters({"RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
+        gains = os.environ.get("MA_SPEED_LIMIT_PID", "")
+        if gains:
+            self.set_parameters({"ATC_SPD_LIM_" + k.strip(): float(v) for k, v in (kv.split("=") for kv in gains.split(","))})
+
+    def _speed_limit_nav_cms(self):
+        '''cm/s, comfortably above the limit'''
+        return max(1500, int(150 * self.SPEED_LIMIT))
+
+    def _speed_limit_loiter_fast(self):
+        '''LOITER fast enough that the limiter is what holds it back
+        (the T150's 20 deg LOIT_ANG_MAX can't reach 25 m/s)'''
+        self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms(),
+                             "LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
+
+    def _speed_limit_well_over(self):
+        '''clearly over the limit, without asking more than the airframe's top speed'''
+        return min(self.SPEED_LIMIT * 1.5, self.SPEED_LIMIT + 5)
+
+    def _speed_limit_spinup(self):
+        '''seconds of full stick to get up to speed'''
+        return 15 + max(0, self.SPEED_LIMIT - 5)
+
+    def _speed_limit_fence_radius(self, avoid):
+        '''far enough to reach the limit first, and to stop in time with avoidance on'''
+        if not avoid:
+            return max(80, 6 * self.SPEED_LIMIT)
+        accel = max(self.get_parameter("AVOID_ACCEL_MAX"), 0.5)
+        return max(80, self._speed_limit_well_over() ** 2 / (2 * accel) + 5 * self.SPEED_LIMIT)
 
     def _speed_limit_enable(self, limit=None):
         self.set_parameters({
@@ -9310,8 +9372,7 @@ class AutoTestCopter(AutoTest):
         })
 
     def _speed_limit_watch(self):
-        '''install a hook that tracks true speed and attitude for the rest of the test.
-        Call reset() to start a new window.'''
+        '''track true speed and attitude for the rest of the test, reset() starts a new window'''
         class Watch(object):
             def reset(w):
                 w.last_true = getattr(w, 'last_true', 0.0)
@@ -9344,7 +9405,7 @@ class AutoTestCopter(AutoTest):
         return w
 
     def _speed_window(self, w, seconds):
-        # re-request the true speed stream, a reboot resets message rates
+        # a reboot resets message rates
         self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_SIM_STATE, 20)
         w.reset()
         self.delay_sim_time(seconds)
@@ -9352,8 +9413,7 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("no SIM_STATE received, can't check the true speed")
 
     def _assert_speed_held(self, w, what, limit=None, must_reach=True, steady=False):
-        '''check the last window. must_reach: max has to get to SPEED_MIN of the limit.
-        steady: the speed has to stay at or above SPEED_MIN for the whole window.'''
+        '''must_reach: got up to the limit at some point. steady: stayed there the whole window'''
         limit = limit if limit is not None else self.SPEED_LIMIT
         self.progress("%s: true speed %.2f-%.2f m/s (EKF max %.2f), limit %.1f" %
                       (what, w.min_true, w.max_true, w.max_ekf, limit))
@@ -9366,12 +9426,15 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("%s: dropped to %.2f m/s while holding the limit %.1f" %
                                        (what, w.min_true, limit))
 
+    def _speed_limit_tailwind_over(self):
+        '''a tailwind that pushes it well past the limit'''
+        return self.SPEED_LIMIT + max(3, 0.3 * self.SPEED_LIMIT)
+
     def _speed_limit_tailwind(self, speed):
-        '''wind blowing the way the vehicle is pointing, full strength at any height.
-        SIM_WIND_DIR is where the wind comes from, and the vehicle doesn't start facing north.'''
+        '''wind from behind (SIM_WIND_DIR is where it comes from)'''
         heading = self.assert_receive_message('VFR_HUD').heading
         self.set_parameters({
-            "SIM_WIND_T": 1,           # no reduction near the ground
+            "SIM_WIND_T": 1,
             "SIM_WIND_TURB": 0,
             "SIM_WIND_SPD": speed,
             "SIM_WIND_DIR": (heading + 180) % 360,
@@ -9383,35 +9446,38 @@ class AutoTestCopter(AutoTest):
         return math.degrees(math.atan2(m.vy, m.vx))
 
     def _speed_limit_fly_forward(self, alt=20, settle=10):
-        '''take off in ALT_HOLD and hold full forward stick'''
+        '''ALT_HOLD takeoff, then full forward stick'''
         self.takeoff(alt, mode='ALT_HOLD')
         self.set_rc(2, 1000)
         self.delay_sim_time(settle)
 
     def SpeedLimitAttitudeDisabledSanity(self):
         '''Speed limiter off, check the same manoeuvre goes well over the limit'''
+        self._speed_limit_setup()
         self.set_parameters({"ATC_SPD_LIM_EN": 0})
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward(settle=0)
-        self._speed_window(w, 20)
+        self._speed_window(w, self._speed_limit_spinup() + 5)
         self.set_rc(2, 1500)
         self.progress("limiter off: true speed max %.2f m/s" % w.max_true)
-        if w.max_true < 1.5 * self.SPEED_LIMIT:
+        if w.max_true < self._speed_limit_well_over():
             raise NotAchievedException("only got to %.2f m/s with limiter off" % w.max_true)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitAttitudeAltHold(self):
         '''Speed limiter holds ATC_SPD_LIM_VAL in ALT_HOLD'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward(settle=10)
         self._speed_window(w, 30)
         self._assert_speed_held(w, "ALT_HOLD", steady=True)
         self.set_rc(2, 1500)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitAttitudeSteeringAndYaw(self):
         '''Speed limiter still lets the pilot roll and yaw'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward()
@@ -9439,15 +9505,16 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("didn't yaw while speed limited (%.1f deg)" % yawed)
 
         self.set_rc(2, 1500)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitAttitudeAuto(self):
         '''Speed limiter in AUTO with WPNAV_SPEED above the limit'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"WPNAV_SPEED": 1500})
+        self.set_parameters({"WPNAV_SPEED": self._speed_limit_nav_cms()})
         self.upload_simple_relhome_mission([
             (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 20),
-            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 400, 0, 20),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, max(400, 30 * self.SPEED_LIMIT), 0, 20),
             (mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0),
         ])
         w = self._speed_limit_watch()
@@ -9456,22 +9523,23 @@ class AutoTestCopter(AutoTest):
         self.arm_vehicle()
         self.change_mode('AUTO')
         self.set_rc(3, 1500)
-        self.wait_waypoint(2, 3, timeout=240)
+        self.wait_waypoint(2, 3, timeout=600)
         self._assert_speed_held(w, "AUTO")
-        self.wait_disarmed(timeout=240)
+        self.wait_disarmed(timeout=600)
 
     def SpeedLimitAttitudeTailwindAboveLimit(self):
         '''A tailwind faster than the limit carries the vehicle over it: the limiter can only level it, not brake'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
-        self._speed_limit_tailwind(self.SPEED_LIMIT + 3)
+        self._speed_limit_tailwind(self._speed_limit_tailwind_over())
         self.set_rc(2, 1000)
         self.delay_sim_time(20)
         self._speed_window(w, 20)
         self.progress("tailwind %.0f m/s, limit %.0f m/s: true speed %.2f-%.2f m/s, max tilt %.1f deg" %
-                      (self.SPEED_LIMIT + 3, self.SPEED_LIMIT, w.min_true, w.max_true, w.max_tilt))
-        # known limitation, pinned down here so a change in behaviour shows up
+                      (self._speed_limit_tailwind_over(), self.SPEED_LIMIT, w.min_true, w.max_true, w.max_tilt))
+        # known limitation, so we notice if it changes
         if w.max_true < 1.1 * self.SPEED_LIMIT:
             raise NotAchievedException("tailwind didn't take it over the limit (%.2f m/s), behaviour has changed" %
                                        w.max_true)
@@ -9479,14 +9547,15 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("limiter should be holding it level in the tailwind (%.1f deg)" % w.max_tilt)
         self.set_rc(2, 1500)
         self.set_parameters({"SIM_WIND_SPD": 0})
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitRecoversAfterTailwindDrops(self):
         '''After a tailwind faster than the limit dies away, the vehicle gets back up to the limit'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
-        self._speed_limit_tailwind(self.SPEED_LIMIT + 3)
+        self._speed_limit_tailwind(self._speed_limit_tailwind_over())
         self.set_rc(2, 1000)
         self.delay_sim_time(40)
         self.set_parameters({"SIM_WIND_SPD": 0})
@@ -9494,35 +9563,37 @@ class AutoTestCopter(AutoTest):
         self._speed_window(w, 15)
         self._assert_speed_held(w, "after the tailwind dropped", steady=True)
         self.set_rc(2, 1500)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitLoiter(self):
         '''Speed limiter in LOITER with LOIT_SPEED above the limit, and loiter still stops'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"LOIT_SPEED": 1500})
+        self._speed_limit_loiter_fast()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='LOITER')
         self.set_rc(2, 1000)
         self.delay_sim_time(10)
         self._speed_window(w, 30)
         self._assert_speed_held(w, "LOITER", steady=True)
-        # release the stick, the position controller has been held back for 30s
         w.reset()
         self.set_rc(2, 1500)
         self.wait_groundspeed(0, 0.5, minimum_duration=3, timeout=30)
         self._assert_speed_held(w, "LOITER after stick release", must_reach=False)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitGuidedVelocity(self):
         '''Speed limiter in GUIDED with a velocity target above the limit'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='GUIDED')
         tstart = self.get_sim_time()
         judging = False
-        while self.get_sim_time_cached() - tstart < 30:
-            if not judging and self.get_sim_time_cached() - tstart > 10:
-                w.reset()                          # judge the last 20s, once it's up to speed
+        total = 30 + max(0, self.SPEED_LIMIT - 5)
+        while self.get_sim_time_cached() - tstart < total:
+            if not judging and self.get_sim_time_cached() - tstart > total - 20:
+                w.reset()                          # only the last 20s count
                 judging = True
             self.mav.mav.set_position_target_local_ned_send(
                 0, 1, 1,
@@ -9537,12 +9608,13 @@ class AutoTestCopter(AutoTest):
                 0, 0)
             self.delay_sim_time(0.5)
         self._assert_speed_held(w, "GUIDED", steady=True)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitModeTransitions(self):
         '''Speed limit is held through mode changes at the limit, with no surge after each change'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"LOIT_SPEED": 1500, "RTL_SPEED": 1500})
+        self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms(), "RTL_SPEED": self._speed_limit_nav_cms()})
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward()
         for mode in ['LOITER', 'POSHOLD', 'ALT_HOLD', 'LOITER', 'ALT_HOLD']:
@@ -9552,23 +9624,24 @@ class AutoTestCopter(AutoTest):
             self._assert_speed_held(w, "after switching to %s" % mode)
         self.set_rc(2, 1500)
         w.reset()
-        self.do_RTL(timeout=300)
+        self.do_RTL(timeout=600)
         self._assert_speed_held(w, "RTL")
 
     def SpeedLimitEnableInFlight(self):
         '''Turning the limiter on well above the limit is no harsher than the pilot snapping the stick back'''
+        self._speed_limit_setup()
         self.set_parameters({"ATC_SPD_LIM_EN": 0, "ATC_SPD_LIM_VAL": self.SPEED_LIMIT})
         w = self._speed_limit_watch()
-        self._speed_limit_fly_forward(settle=15)
-        # baseline: pilot centres the stick from full forward
+        self._speed_limit_fly_forward(settle=self._speed_limit_spinup())
+        # compare with the pilot centring the stick
         w.reset()
         self.set_rc(2, 1500)
         self.delay_sim_time(3)
         snap_rate = w.max_pitch_rate
         self.set_rc(2, 1000)
-        self.delay_sim_time(15)
+        self.delay_sim_time(self._speed_limit_spinup())
         gs = self.assert_receive_message('VFR_HUD').groundspeed
-        if gs < 2 * self.SPEED_LIMIT:
+        if gs < self._speed_limit_well_over():
             raise NotAchievedException("only at %.2f m/s before enabling" % gs)
         alt_before = self.assert_receive_message('VFR_HUD').alt
         w.reset()
@@ -9585,21 +9658,21 @@ class AutoTestCopter(AutoTest):
         alt_after = self.assert_receive_message('VFR_HUD').alt
         if abs(alt_after - alt_before) > 5:
             raise NotAchievedException("altitude changed %.1f m when limiting" % (alt_after - alt_before))
-        # and off again: should speed back up
         w.reset()
         self.set_parameters({"ATC_SPD_LIM_EN": 0})
         self.delay_sim_time(20)
-        if w.max_true < 1.5 * self.SPEED_LIMIT:
+        if w.max_true < self._speed_limit_well_over():
             raise NotAchievedException("didn't speed up after disabling (%.2f m/s)" % w.max_true)
         self.set_rc(2, 1500)
-        self.do_RTL(timeout=300)
+        self.do_RTL(timeout=600)
 
     def SpeedLimitLowerLimitInFlight(self):
         '''Lowering ATC_SPD_LIM_VAL in flight takes effect'''
-        high = 2 * self.SPEED_LIMIT
+        self._speed_limit_setup()
+        high = min(2 * self.SPEED_LIMIT, self.SPEED_LIMIT + 5)
         self._speed_limit_enable(limit=high)
         w = self._speed_limit_watch()
-        self._speed_limit_fly_forward(settle=20)
+        self._speed_limit_fly_forward(settle=20 + self._speed_limit_spinup())
         self._speed_window(w, 5)
         self._assert_speed_held(w, "at %.0f m/s" % high, limit=high, steady=True)
         self.set_parameters({"ATC_SPD_LIM_VAL": self.SPEED_LIMIT})
@@ -9607,26 +9680,26 @@ class AutoTestCopter(AutoTest):
         self._speed_window(w, 10)
         self._assert_speed_held(w, "after lowering", steady=True)
         self.set_rc(2, 1500)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitGPSOutage(self):
         '''Long GPS outage while limited: EKF loses velocity, vehicle stays controllable, limit comes back'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"FS_EKF_ACTION": 2})  # stay in ALT_HOLD on an EKF failsafe
+        self.set_parameters({"FS_EKF_ACTION": 2})  # stay in ALT_HOLD
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward()
         self._speed_window(w, 5)
         self._assert_speed_held(w, "before outage", steady=True)
         w.reset()
-        self.set_parameters({"SIM_GPS_DISABLE": 1})
+        self.set_parameters({"SIM_GPS_DISABLE": 1, "SIM_GPS2_DISABLE": 1})
         tstart = self.get_sim_time()
         lost = False
         while self.get_sim_time_cached() - tstart < 30:
             m = self.assert_receive_message('EKF_STATUS_REPORT', timeout=5)
             if not (m.flags & mavutil.mavlink.EKF_VELOCITY_HORIZ):
                 lost = True
-        # the speed during the outage isn't asserted: without GPS nothing knows the real speed.
-        # The limiter carries on using the EKF velocity (get_velocity_NED doesn't say it's invalid).
+        # speed isn't checked during the outage, nothing knows the real speed without GPS
         self.progress("GPS off 30s: EKF lost velocity=%s, true speed max %.2f m/s, EKF said max %.2f m/s, max tilt %.1f" %
                       (lost, w.max_true, w.max_ekf, w.max_tilt))
         if not lost:
@@ -9634,7 +9707,7 @@ class AutoTestCopter(AutoTest):
         if w.max_tilt > 45:
             raise NotAchievedException("tilted %.1f deg during the outage" % w.max_tilt)
         w.reset()
-        self.set_parameters({"SIM_GPS_DISABLE": 0})
+        self.set_parameters({"SIM_GPS_DISABLE": 0, "SIM_GPS2_DISABLE": 0})
         self.delay_sim_time(5)
         self.progress("GPS back: max pitch rate %.0f deg/s" % w.max_pitch_rate)
         if w.max_pitch_rate > self.STICK_SNAP_RATE:
@@ -9643,24 +9716,25 @@ class AutoTestCopter(AutoTest):
         self._speed_window(w, 10)
         self._assert_speed_held(w, "after GPS back", steady=True)
         self.set_rc(2, 1500)
-        self.do_RTL(timeout=300)
+        self.do_RTL(timeout=600)
 
     def SpeedLimitRCFailsafeRTL(self):
         '''Radio failsafe while limited goes to RTL, which respects the limit and lands'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"RTL_SPEED": 1500, "FS_THR_ENABLE": 1})
+        self.set_parameters({"RTL_SPEED": self._speed_limit_nav_cms(), "FS_THR_ENABLE": 1})
         w = self._speed_limit_watch()
         self._speed_limit_fly_forward(settle=30)
         w.reset()
         self.set_parameters({"SIM_RC_FAIL": 1})
         self.wait_mode('RTL', timeout=10)
-        self.wait_disarmed(timeout=300)
+        self.wait_disarmed(timeout=600)
         self.set_parameters({"SIM_RC_FAIL": 0})
         self._assert_speed_held(w, "failsafe RTL")
 
     def SpeedLimitNoOvershootAfterGroundWait(self):
-        '''First run after a long wait on the ground still holds the limit. Smoke test only: SITL doesn't
-        show the windup as extra speed, the unit tests check the integrator directly'''
+        '''First run after a long wait on the ground still holds the limit (the unit tests cover the windup itself)'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self.wait_ready_to_arm()
@@ -9671,10 +9745,11 @@ class AutoTestCopter(AutoTest):
         self.delay_sim_time(30)
         self._assert_speed_held(w, "first run after ground wait")
         self.set_rc(2, 1500)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitVibration(self):
-        '''Speed limit is held with IMU noise (doesn't measure attitude target chatter, use RATE/RCOU logs for that)'''
+        '''Speed limit is held with IMU noise'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
         self.set_parameters({"SIM_ACC1_RND": 3, "SIM_ACC2_RND": 3})
         w = self._speed_limit_watch()
@@ -9683,7 +9758,7 @@ class AutoTestCopter(AutoTest):
         self._assert_speed_held(w, "with IMU noise", steady=True)
         self.set_rc(2, 1500)
         self.set_parameters({"SIM_ACC1_RND": 0, "SIM_ACC2_RND": 0})
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def _speed_limit_fence_setup(self, radius, avoid):
         self.set_parameters({
@@ -9691,12 +9766,12 @@ class AutoTestCopter(AutoTest):
             "FENCE_TYPE": 2,           # circle
             "FENCE_RADIUS": radius,
             "FENCE_ACTION": 1,         # RTL
-            "AVOID_ENABLE": 1 if avoid else 0,   # 1 = stop at fence
+            "AVOID_ENABLE": 1 if avoid else 0,
             "AVOID_MARGIN": 2,
         })
 
     def _speed_limit_fly_at_fence(self, mode, radius, seconds, tailwind=None):
-        '''full forward stick towards the fence; returns (max distance from home, breached, watch)'''
+        '''full stick at the fence, returns (furthest from home, breached, watch)'''
         w = self._speed_limit_watch()
         self.takeoff(20, mode=mode)
         if tailwind is not None:
@@ -9719,7 +9794,7 @@ class AutoTestCopter(AutoTest):
         return max_d, breached, w
 
     def _speed_limit_fence_breach_althold(self, limiter):
-        radius = 80
+        radius = self._speed_limit_fence_radius(avoid=False)
         if limiter:
             self._speed_limit_enable()
         else:
@@ -9730,18 +9805,21 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("no fence breach")
         if limiter:
             self._assert_speed_held(w, "ALT_HOLD into fence")
-        self.wait_mode('RTL', timeout=10)
-        self.wait_disarmed(timeout=300)
+        # more than 100m out, the fence lands instead of RTL
+        self.wait_mode('LAND' if max_d - radius > 100 else 'RTL', timeout=10)
+        self.wait_disarmed(timeout=600)
         return max_d - radius
 
     def SpeedLimitFenceBreachAltHold(self):
         '''ALT_HOLD into a fence with the limiter on: breaches at the limit, RTLs and lands'''
+        self._speed_limit_setup()
         overshoot = self._speed_limit_fence_breach_althold(limiter=True)
         if self.FENCE_OVERSHOOT_MAX is not None and overshoot > self.FENCE_OVERSHOOT_MAX:
             raise NotAchievedException("went %.1fm past the fence" % overshoot)
 
     def SpeedLimitFenceBreachAltHoldNoLimiter(self):
         '''Same as SpeedLimitFenceBreachAltHold with the limiter off, so the overshoot can be compared'''
+        self._speed_limit_setup()
         overshoot = self._speed_limit_fence_breach_althold(limiter=False)
         if overshoot < 15:
             raise NotAchievedException("only %.1fm past the fence without the limiter, the comparison means nothing" %
@@ -9749,57 +9827,55 @@ class AutoTestCopter(AutoTest):
 
     def SpeedLimitFenceAvoidLoiter(self):
         '''LOITER into a fence with avoidance on: stops before it with the limiter holding speed'''
-        radius = 80
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"LOIT_SPEED": 1500})
+        self._speed_limit_loiter_fast()
+        radius = self._speed_limit_fence_radius(avoid=True)
         self._speed_limit_fence_setup(radius, avoid=True)
         max_d, breached, w = self._speed_limit_fly_at_fence('LOITER', radius, 40)
         self._assert_speed_held(w, "LOITER into fence")
         if breached or max_d > radius - 1:
             raise NotAchievedException("didn't stop before the fence margin (%.1fm)" % max_d)
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitFenceAvoidLoiterTailwind(self):
         '''LOITER into a fence with a tailwind faster than the limit: avoidance can still stop it'''
-        radius = 80
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"LOIT_SPEED": 1500})
+        self._speed_limit_loiter_fast()
+        radius = self._speed_limit_fence_radius(avoid=True)
         self._speed_limit_fence_setup(radius, avoid=True)
-        max_d, breached, w = self._speed_limit_fly_at_fence('LOITER', radius, 40, tailwind=self.SPEED_LIMIT + 3)
-        # the tailwind takes it over the limit (see SpeedLimitAttitudeTailwindAboveLimit).
-        # What matters here is that avoidance still stops it, braking isn't restricted.
-        if w.max_true < 1.1 * self.SPEED_LIMIT:
+        max_d, breached, w = self._speed_limit_fly_at_fence('LOITER', radius, 40, tailwind=self._speed_limit_tailwind_over())
+        # it will be over the limit, what matters is that avoidance still stops it
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
             raise NotAchievedException("tailwind didn't take it over the limit (%.2f m/s), not testing the hard case" %
                                        w.max_true)
         if breached or max_d > radius - 1:
             raise NotAchievedException("didn't stop before the fence margin in a tailwind (%.1fm)" % max_d)
         self.set_parameters({"SIM_WIND_SPD": 0})
-        self.do_RTL()
+        self.do_RTL(timeout=600)
 
     def SpeedLimitFenceBreachAltHoldTailwind(self):
         '''ALT_HOLD into a fence with a tailwind faster than the limit: breaches, RTLs into the wind and lands'''
-        radius = 80
+        self._speed_limit_setup()
+        radius = self._speed_limit_fence_radius(avoid=False)
         self._speed_limit_enable()
         self._speed_limit_fence_setup(radius, avoid=False)
-        max_d, breached, w = self._speed_limit_fly_at_fence('ALT_HOLD', radius, 40, tailwind=self.SPEED_LIMIT + 3)
+        max_d, breached, w = self._speed_limit_fly_at_fence('ALT_HOLD', radius, 40, tailwind=self._speed_limit_tailwind_over())
         if not breached:
             raise NotAchievedException("no fence breach")
         if w.max_true < 1.1 * self.SPEED_LIMIT:
             raise NotAchievedException("tailwind didn't take it over the limit, not testing the hard case")
-        # no braking, so the overshoot is bigger than in still air. Reported, not judged against
-        # FENCE_OVERSHOOT_MAX, the SORA case has to cover the wind limit separately
+        # reported only, the SORA case covers the wind limit
         self.progress("tailwind fence overshoot: %.1fm at %.2f m/s" % (max_d - radius, w.max_true))
-        self.wait_mode('RTL', timeout=10)
-        self.wait_disarmed(timeout=400)
+        self.wait_mode('LAND' if max_d - radius > 100 else 'RTL', timeout=10)
+        self.wait_disarmed(timeout=700)
         self.set_parameters({"SIM_WIND_SPD": 0})
 
     def _fence_case(self, mode, fence, action, avoid, how, speed, edge=150.0):
-        '''Fly one approach at a fence edge `edge` metres ahead and see where the vehicle ends up.
-        fence: 'circle', 'inclusion' (square round home) or 'exclusion' (square in the way)
-        how:   'limiter' full stick, limiter set to `speed`
-               'pilot'   limiter off, the test works the stick to hold `speed` (ALT_HOLD)
-               'nav'     limiter off, LOIT_SPEED / guided velocity set to `speed`
-        Returns (cruise speed 20-40m out, metres past the edge, breached).'''
+        '''one run at a fence edge `edge` m ahead, returns (cruise speed, metres past the edge, breached).
+        fence: circle, inclusion or exclusion. how: limiter (full stick), pilot (stick held to `speed`)
+        or nav (LOIT_SPEED / guided velocity at `speed`)'''
         self.reboot_sitl()
         self.clear_fence()
         self.set_parameters({
@@ -9807,7 +9883,7 @@ class AutoTestCopter(AutoTest):
             "FENCE_ACTION": action,
             "AVOID_ENABLE": 1 if avoid else 0,
             "AVOID_MARGIN": 2,
-            "LOIT_SPEED": 1500 if how != 'nav' else speed * 100,
+            "LOIT_SPEED": self._speed_limit_nav_cms() if how != 'nav' else speed * 100,
             "ATC_SPD_LIM_EN": 1 if how == 'limiter' else 0,
             "ATC_SPD_LIM_VAL": speed,
         })
@@ -9833,8 +9909,8 @@ class AutoTestCopter(AutoTest):
         self.delay_sim_time(2)
 
         self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, 10)
-        # the 'pilot' holds speed with a PI loop on lean angle, like a steady hand on the stick
-        pilot_tilt_i = 10.0                 # deg, roughly what 5 m/s needs
+        # the 'pilot' holds speed with a PI loop on lean angle
+        pilot_tilt_i = 10.0                 # deg, about right for 5 m/s
         angle_max = self.get_parameter("ANGLE_MAX") * 0.01
         rc2 = 1000 if how != 'pilot' else int(1500 - 500 * pilot_tilt_i / angle_max)
         self.set_rc(2, rc2)
@@ -9872,7 +9948,7 @@ class AutoTestCopter(AutoTest):
                 new_rc2 = int(1500 - 500 * tilt / angle_max)
                 if new_rc2 != rc2:
                     rc2 = new_rc2
-                    self.rc_queue.put({2: rc2})   # set_rc() waits for RC_CHANNELS, too slow for a control loop
+                    self.rc_queue.put({2: rc2})   # set_rc() is too slow for this
             if mode == 'GUIDED' and not breached:
                 vel = speed if how == 'nav' else 3 * speed
                 self.mav.mav.set_position_target_local_ned_send(
@@ -9893,6 +9969,7 @@ class AutoTestCopter(AutoTest):
 
     def SpeedLimitFenceMatchedSpeed(self):
         '''Fence overshoot / stopping point with the limiter vs the same speed reached without it'''
+        self._speed_limit_setup()
         RTL, BRAKE = 1, 4
         results = []
 
@@ -9905,7 +9982,7 @@ class AutoTestCopter(AutoTest):
                                            (mode, fence, a[0], b[0]))
             return a, b
 
-        # no avoidance in ALT_HOLD: breach, then the fence action stops it
+        # ALT_HOLD has no avoidance, so it breaches either way
         for speed in [5.0, 10.0]:
             a, b = pair('ALT_HOLD', 'circle', RTL, False, 'pilot', speed)
             if not (a[2] and b[2]):
@@ -9915,14 +9992,13 @@ class AutoTestCopter(AutoTest):
         a, b = pair('ALT_HOLD', 'circle', BRAKE, False, 'pilot', 5.0)
         if abs(a[1] - b[1]) > 2.0:
             raise NotAchievedException("ALT_HOLD BRAKE: limiter %.1fm past vs pilot %.1fm" % (a[1], b[1]))
-        # avoidance switched on doesn't help ALT_HOLD with a fence
         _, past, breached = self._fence_case('ALT_HOLD', 'circle', RTL, True, 'limiter', 5.0)
         results.append(('ALT_HOLD', 'circle', RTL, True, 5.0, (0, past, breached), None, None))
         a, b = pair('ALT_HOLD', 'exclusion', RTL, False, 'pilot', 5.0)
         if abs(a[1] - b[1]) > 2.0:
             raise NotAchievedException("ALT_HOLD exclusion: limiter %.1fm in vs pilot %.1fm" % (a[1], b[1]))
 
-        # modes with fence avoidance: should stop short of every fence type, same place either way
+        # with avoidance it should stop short, in the same place either way
         for mode, fence in [('LOITER', 'circle'), ('LOITER', 'inclusion'), ('LOITER', 'exclusion'), ('GUIDED', 'circle')]:
             a, b = pair(mode, fence, RTL, True, 'nav', 5.0)
             for name, r in (('limiter', a), ('nav speed', b)):
@@ -9941,10 +10017,11 @@ class AutoTestCopter(AutoTest):
 
     def SpeedLimitPilotOverride(self):
         '''RC switch (RCx_OPTION 199) lets the pilot turn the limiter off and back on, and a radio failsafe clears it'''
+        self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"RC10_OPTION": 199, "RTL_SPEED": 1500, "FS_THR_ENABLE": 1})
+        self.set_parameters({"RC10_OPTION": 199, "RTL_SPEED": self._speed_limit_nav_cms(), "FS_THR_ENABLE": 1})
         self.set_rc(10, 1000)
-        self.context_collect('STATUSTEXT')    # set_rc() reads messages too, so don't miss the text
+        self.context_collect('STATUSTEXT')
 
         def switch(pwm, text):
             self.context_clear_collection('STATUSTEXT')
@@ -9956,15 +10033,14 @@ class AutoTestCopter(AutoTest):
         self._speed_window(w, 10)
         self._assert_speed_held(w, "before override", steady=True)
 
-        # override on: limiter off, the pilot gets full speed
         switch(2000, "Speed limiter OFF")
-        self.delay_sim_time(15)
+        self.delay_sim_time(self._speed_limit_spinup())
         self._speed_window(w, 5)
         self.progress("override on: true speed %.2f-%.2f m/s" % (w.min_true, w.max_true))
-        if w.max_true < 1.5 * self.SPEED_LIMIT:
+        if w.max_true < self._speed_limit_well_over():
             raise NotAchievedException("override didn't turn the limiter off (%.2f m/s)" % w.max_true)
 
-        # override off at speed: back to the limit, no harsher than a stick snap
+        # back on at speed, no harsher than a stick snap
         w.reset()
         switch(1000, "Speed limiter ON")
         self.delay_sim_time(3)
@@ -9975,17 +10051,18 @@ class AutoTestCopter(AutoTest):
         self._speed_window(w, 10)
         self._assert_speed_held(w, "after override off", steady=True)
 
-        # override on again, then lose the radio: failsafe RTL must be limited
+        # override on, then lose the radio
         switch(2000, "Speed limiter OFF")
         self.delay_sim_time(10)
         self.context_clear_collection('STATUSTEXT')
         self.set_parameters({"SIM_RC_FAIL": 1})
         self.wait_mode('RTL', timeout=10)
         self.wait_statustext("Speed limiter ON (radio failsafe)", check_context=True, timeout=5)
-        self.delay_sim_time(10)                # RTL brakes from override speed and turns for home first
+        # give RTL time to slow down and turn for home
+        self.delay_sim_time(10 + max(0, self.SPEED_LIMIT - 5))
         self._speed_window(w, 15)
         self._assert_speed_held(w, "failsafe RTL with the override switch still high")
-        # radio back with the switch still high: stays limited until the pilot moves the switch
+        # radio back, switch still high: stays limited until it's moved
         self.set_parameters({"SIM_RC_FAIL": 0})
         self.change_mode('ALT_HOLD')
         self.set_rc(2, 1000)
@@ -9994,7 +10071,249 @@ class AutoTestCopter(AutoTest):
         self._assert_speed_held(w, "radio back, switch not moved", steady=True)
         self.set_rc(2, 1500)
         self.set_rc(10, 1000)
-        self.do_RTL(timeout=300)
+        self.do_RTL(timeout=600)
+    # STABILIZE flight in gusts, and the gain sweep
+
+    def _speed_limit_pilot(self, w, seconds, pitch=1500, roll=1500, yaw=1500, alt=50, schedule=None, until=None):
+        '''hold the sticks in STABILIZE and work the throttle to keep `alt`. schedule(t) can
+        return (roll, pitch, yaw) to move them, until() ends it early. Returns the lowest height seen.'''
+        tstart = self.get_sim_time_cached()
+        lowest = 1000.0
+        while True:
+            t = self.get_sim_time_cached() - tstart
+            if t > seconds or (until is not None and until()):
+                break
+            if schedule is not None:
+                roll, pitch, yaw = schedule(t)
+            m = self.assert_receive_message('GLOBAL_POSITION_INT', timeout=2)
+            height = m.relative_alt * 0.001
+            climb = -m.vz * 0.01
+            lowest = min(lowest, height)
+            throttle = int(1500 + 20 * (alt - height) - 25 * climb)
+            self.set_rc_from_map({
+                1: roll,
+                2: pitch,
+                3: max(1050, min(2000, throttle)),
+                4: yaw,
+            })
+        return lowest
+
+    def _speed_limit_gust(self, speed, relative_dir, turbulence=2):
+        '''wind relative to the heading: 0 head, 90 from the right, 180 tail'''
+        heading = self.assert_receive_message('VFR_HUD').heading
+        self.set_parameters({
+            "SIM_WIND_T": 1,
+            "SIM_WIND_TURB": turbulence,
+            "SIM_WIND_SPD": speed,
+            "SIM_WIND_DIR": (heading + relative_dir) % 360,
+        })
+
+    def SpeedLimitStabilizeGustMission(self):
+        '''STABILIZE flight in gusts: full forward, roll reversals, yaw twists, gusts from each side, turn back and stop'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        limit = self.SPEED_LIMIT
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 25)
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS, 25)
+        self.takeoff(50, mode='STABILIZE')
+        self._speed_limit_gust(5, 0)
+        phases = []
+
+        def phase(name, seconds, judge=True, band=None, **kwargs):
+            w.reset()
+            lowest = self._speed_limit_pilot(w, seconds, **kwargs)
+            result = {"name": name, "min": w.min_true, "max": w.max_true, "tilt": w.max_tilt,
+                      "pitch_rate": w.max_pitch_rate, "lowest": lowest, "judged": judge}
+            phases.append(result)
+            self.progress("MISSION %s: true speed %.2f-%.2f m/s (limit %.1f), max tilt %.1f deg, "
+                          "max pitch rate %.0f deg/s, lowest %.1fm%s" %
+                          (name, w.min_true, w.max_true, limit, w.max_tilt, w.max_pitch_rate, lowest,
+                           "" if judge else " (not judged)"))
+            if lowest < 5:
+                raise NotAchievedException("%s: down to %.1fm, the pilot lost the height" % (name, lowest))
+            if w.max_tilt > 60:
+                raise NotAchievedException("%s: tilted %.1f deg, out of control" % (name, w.max_tilt))
+            band = band or self.SPEED_MAX
+            if judge and w.max_true > limit * band:
+                raise NotAchievedException("%s: %.2f m/s, more than %.0f%% over the limit %.1f" %
+                                           (name, w.max_true, (band - 1) * 100, limit))
+
+        spinup = self._speed_limit_spinup()
+        phase("full forward", spinup + 10, pitch=1000)
+
+        # hard left and right every 3s
+        phase("roll reversals", 15, schedule=lambda t: (1150 if int(t / 3) % 2 else 1850, 1000, 1500))
+
+        # full yaw each way every 2s
+        phase("yaw twists", 12, schedule=lambda t: (1500, 1000, 1150 if int(t / 2) % 2 else 1850))
+
+        for name, direction in (("headwind gust", 0), ("crosswind gust", 90), ("quartering gust", 135)):
+            self._speed_limit_gust(5 + 6, direction, turbulence=3)
+            phase(name, 6, band=self.GUST_MAX, pitch=1000)
+        # a tailwind will push it over, the limiter can only level it
+        self._speed_limit_gust(5 + 6, 180, turbulence=3)
+        phase("tailwind gust", 6, judge=False, pitch=1000)
+        self._speed_limit_gust(5, 0)
+        phase("after the gusts", 8, pitch=1000)
+
+        course_before = self._course_deg()
+
+        def turned():
+            return abs((self._course_deg() - course_before + 180) % 360 - 180)
+        phase("turn back", 30 + limit, roll=1850, pitch=1000, yaw=1750, until=lambda: turned() > 160)
+        turn = turned()
+        self.progress("MISSION turn back: course changed %.0f deg" % turn)
+        if turn < 90:
+            raise NotAchievedException("only turned %.0f deg on the way back" % turn)
+
+        phase("stop", 6 + limit / 3, judge=False, pitch=2000)
+        phase("hover", 8, pitch=1500)
+
+        self.set_parameters({"SIM_WIND_SPD": 0, "SIM_WIND_TURB": 0})
+        self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
+        self.change_mode('LAND')
+        self.wait_disarmed(timeout=600)
+
+    def _speed_limit_hold(self, w, seconds, mode):
+        '''full forward stick (plus throttle in STABILIZE)'''
+        if mode == 'STABILIZE':
+            self._speed_limit_pilot(w, seconds, pitch=1000)
+        else:
+            self.delay_sim_time(seconds)
+
+    def _speed_limit_samples(self, w, seconds, mode):
+        '''(t, speed, pitch) samples while holding full stick'''
+        samples = []
+
+        def hook(mav, m):
+            if m.get_type() == 'SIM_STATE':
+                samples.append((self.get_sim_time_cached(), math.hypot(m.vn, m.ve), math.degrees(m.pitch)))
+
+        self.install_message_hook(hook)
+        try:
+            self._speed_limit_hold(w, seconds, mode)
+        finally:
+            self.remove_message_hook(hook)
+        return samples
+
+    def _speed_limit_oscillation(self, samples, limit):
+        '''mean, peak to peak and period of a window of samples'''
+        if len(samples) < 20:
+            return None
+        speeds = [s for _, s, _ in samples]
+        pitches = [p for _, _, p in samples]
+        mean = sum(speeds) / len(speeds)
+        crossings = [samples[i][0] for i in range(1, len(samples))
+                     if (speeds[i - 1] - mean) * (speeds[i] - mean) < 0]
+        period = 2 * (crossings[-1] - crossings[0]) / (len(crossings) - 1) if len(crossings) > 2 else 0.0
+        return {
+            "mean": mean,
+            "p2p": max(speeds) - min(speeds),
+            "pitch_p2p": max(pitches) - min(pitches),
+            "period": period,
+            "over": max(speeds) - limit,
+        }
+
+    def SpeedLimitGainSweep(self):
+        '''Speed limiter P and I flown at full stick with D at 0: where it starts to oscillate and which hold the limit best'''
+        self._speed_limit_setup()
+        limit = self.SPEED_LIMIT
+        env = os.environ.get
+        # MA_SWEEP_MODE: ALT_HOLD, STABILIZE or both. MA_SWEEP_PAIRS="P:I,P:I" flies just those,
+        # otherwise P is swept at I 0.05 and then I at half the best P
+        modes = env("MA_SWEEP_MODE", "ALT_HOLD").split(",")
+        pairs = [tuple(float(x) for x in v.split(":")) for v in env("MA_SWEEP_PAIRS", "").split(",") if v]
+        p_values = [float(v) for v in env("MA_SWEEP_P", "0.02,0.05,0.1,0.2,0.5,1,2").split(",")]
+        i_values = [float(v) for v in env("MA_SWEEP_I", "0.01,0.02,0.05,0.1,0.2").split(",")]
+        # seconds below the limit, after stepping back up, and settled
+        low_s, step_s, settled_s = [float(v) for v in env("MA_SWEEP_WINDOWS", "8,8,12").split(",")]
+        # points that won't fit in this much flight time are skipped, so it never times out
+        budget = float(env("MA_SWEEP_BUDGET", "1500"))
+        per_point = low_s + step_s + settled_s
+        planned = len(pairs) if pairs else len(p_values) + len(i_values)
+        self.progress("SWEEP plan: %u points in %s at %.0f m/s, about %.0fs of flight (budget %.0fs)" %
+                      (planned * len(modes), ",".join(modes), limit,
+                       len(modes) * (planned * per_point + self._speed_limit_spinup()), budget))
+        swing = 0.04           # oscillating if it swings by more than 4% of the limit
+        self._speed_limit_enable()
+        self.set_parameters({"ATC_SPD_LIM_D": 0, "ATC_SPD_LIM_I": 0.05})
+        w = self._speed_limit_watch()
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 25)
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_RC_CHANNELS, 25)
+        self.takeoff(50, mode=modes[0])
+        start = self.get_sim_time_cached()
+        rows, skipped = [], []
+        # written as we go so a killed run keeps its results
+        csv = open(self.buildlogs_path("%s-SpeedLimitGainSweep-sweep.csv" % self.log_name()), "w")
+        csv.write("mode,limit,P,I,D,overshoot_mps,mean_mps,p2p_mps,pitch_p2p_deg,period_s,verdict\n")
+
+        def point(mode, p, i):
+            if self.get_sim_time_cached() - start + per_point > budget:
+                skipped.append("%s P=%g I=%g" % (mode, p, i))
+                return None
+            self.set_parameters({"ATC_SPD_LIM_P": p, "ATC_SPD_LIM_I": i})
+            # step the limit down 20% and back up
+            self.set_parameters({"ATC_SPD_LIM_VAL": 0.8 * limit})
+            self._speed_limit_hold(w, low_s, mode)
+            self.set_parameters({"ATC_SPD_LIM_VAL": limit})
+            a = self._speed_limit_oscillation(self._speed_limit_samples(w, step_s, mode), limit)
+            b = self._speed_limit_oscillation(self._speed_limit_samples(w, settled_s, mode), limit)
+            if a is None or b is None:
+                raise NotAchievedException("no SIM_STATE received during the sweep")
+            oscillating = b["p2p"] > swing * limit
+            low = b["mean"] < self.SPEED_MIN * limit
+            verdict = "oscillating" if oscillating else ("sits under the limit" if low else "stable")
+            r = {"mode": mode, "P": p, "I": i, "overshoot": a["over"], "mean": b["mean"], "p2p": b["p2p"],
+                 "pitch_p2p": b["pitch_p2p"], "period": b["period"], "verdict": verdict}
+            rows.append(r)
+            csv.write("%s,%g,%g,%g,0,%.3f,%.3f,%.3f,%.2f,%.2f,%s\n" % (
+                mode, limit, p, i, r["overshoot"], r["mean"], r["p2p"], r["pitch_p2p"], r["period"], verdict))
+            csv.flush()
+            self.progress("SWEEP %s P=%g I=%g D=0: overshoot after the step %+.2f m/s, then %.2f m/s mean, "
+                          "%.2f m/s and %.1f deg peak to peak, period %.1fs: %s" %
+                          (mode, p, i, a["over"], b["mean"], b["p2p"], b["pitch_p2p"], b["period"], verdict))
+            return r
+
+        def score(r):
+            return (r["verdict"] != "stable", max(0, r["overshoot"]) + abs(limit - r["mean"]) + r["p2p"])
+
+        try:
+            for mode in modes:
+                self.change_mode(mode)
+                self.set_rc(2, 1000)
+                self._speed_limit_hold(w, self._speed_limit_spinup(), mode)
+                first = len(rows)
+                if pairs:
+                    for p, i in pairs:
+                        point(mode, p, i)
+                else:
+                    for p in p_values:
+                        point(mode, p, 0.05)
+                    swept = rows[first:]
+                    stable = [r["P"] for r in swept if r["verdict"] == "stable"]
+                    first_bad = next((r["P"] for r in swept if r["verdict"] == "oscillating"), None)
+                    p_for_i = float(env("MA_SWEEP_I_AT_P", 0)) or (0.5 * max(stable) if stable else 0.1)
+                    for i in i_values:
+                        point(mode, p_for_i, i)
+                    self.progress("SWEEP result at %.0f m/s in %s: stable P up to %s, oscillating from P=%s; "
+                                  "I swept at P=%g" % (limit, mode, max(stable) if stable else "none",
+                                                       first_bad if first_bad is not None else "beyond the sweep",
+                                                       p_for_i))
+                mine = sorted(rows[first:], key=score)
+                if mine:
+                    b = mine[0]
+                    self.progress("SWEEP best at %.0f m/s in %s: P=%g I=%g D=0 (%s, overshoot %+.2f m/s, "
+                                  "%.2f m/s mean, %.2f m/s peak to peak)" %
+                                  (limit, mode, b["P"], b["I"], b["verdict"], b["overshoot"], b["mean"], b["p2p"]))
+        finally:
+            csv.close()
+        if skipped:
+            self.progress("SWEEP skipped %u points to stay inside %.0fs: %s" %
+                          (len(skipped), budget, ", ".join(skipped)))
+        self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
+        self.change_mode('LAND')
+        self.wait_disarmed(timeout=600)
 
     def tests1a(self):
         '''return list of all tests'''
@@ -10212,6 +10531,7 @@ class AutoTestCopter(AutoTest):
             self.SpeedLimitFenceAvoidLoiterTailwind,
             self.SpeedLimitFenceBreachAltHoldTailwind,
             self.SpeedLimitPilotOverride,
+            self.SpeedLimitStabilizeGustMission,
         ])
         return ret
 
@@ -10225,6 +10545,7 @@ class AutoTestCopter(AutoTest):
         ret.extend(self.tests2a())
         ret.extend(self.tests2b())
         ret.extend(self.testsMA())
+        ret.extend([self.SpeedLimitGainSweep])
         return ret
 
     def disabled_tests(self):
