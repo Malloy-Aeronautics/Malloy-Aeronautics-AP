@@ -182,7 +182,10 @@ def run_autotest(name, out_dir, timeout, buildlogs, extra_env=None):
     reason = ""
     if not passed:
         m = re.search(r'FAILED: "%s[^"]*": (.*)' % name, output)
-        reason = "timed out after %ds" % timeout if timed_out else (m.group(1).strip() if m else "see output.txt")
+        last = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        reason = ("timed out after %ds" % timeout if timed_out else
+                  m.group(1).strip() if m else
+                  "autotest didn't run: %s" % last[-1] if last else "no output, see output.txt")
 
     # failing runs move their logs to BUILDLOGS
     logs = []

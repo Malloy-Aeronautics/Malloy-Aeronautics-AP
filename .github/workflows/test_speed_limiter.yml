@@ -150,6 +150,14 @@ jobs:
           name: sitl-arducopter
           path: build/sitl/bin
 
+      # the image doesn't have MAVProxy for the user the job runs as, and autotest needs it
+      - name: autotest python packages
+        shell: bash
+        run: |
+          python3 -m pip install --user MAVProxy
+          python3 -m pip show MAVProxy pymavlink | grep -E "^(Name|Version)"
+          cd Tools/autotest && python3 -c "import arducopter" && echo "autotest imports OK"
+
       - name: speed limit autotests and gain sweep
         shell: bash
         env:
@@ -169,6 +177,22 @@ jobs:
           fi
           python3 Tools/scripts/ma_test_evidence.py --out evidence --skip-unit --limits "$LIMIT" \
             "${frame[@]}" --also SpeedLimitGainSweep
+
+      - name: why the first test failed
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'EOF' || true
+          import glob, json
+          for path in glob.glob("evidence/*/results.json"):
+              for t in json.load(open(path))["autotests"]:
+                  if t["result"] == "FAIL":
+                      print(t["name"], ":", t["reason"])
+                      out = glob.glob(path.replace("results.json", t["dir"] + "/output.txt"))
+                      if out:
+                          print("".join(open(out[0]).readlines()[-40:]))
+                      raise SystemExit
+          EOF
 
       - name: report
         if: always()
