@@ -43,6 +43,9 @@ concurrency:
 env:
   # T150 tuning
   T150_PID: 'P=0.1,I=0.02,D=0'
+  # same image and Python as the sitl job in ma_ci.yml: autotest needs 3.9 or newer, waf in
+  # this tree needs 3.10 or older
+  PYTHON_VERSION: '3.10'
 
 jobs:
   gate:
@@ -79,26 +82,31 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-    container: ardupilot/ardupilot-dev-base:v0.0.29
+    container: ardupilot/ardupilot-dev-base:v0.1.3
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: python packages for the build
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan
+
       - name: build SITL and the unit test
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          export PATH="/github/home/.local/bin:$PATH"
-          ./waf configure --board sitl
-          ./waf copter
-          ./waf --target tests/test_speed_limiter
+          python ./waf configure --board sitl
+          python ./waf copter
+          python ./waf --target tests/test_speed_limiter
 
       - name: unit tests
         shell: bash
         run: |
-          export PATH="/github/home/.local/bin:$PATH"
-          python3 Tools/scripts/ma_test_evidence.py --out evidence --skip-sitl \
+          python Tools/scripts/ma_test_evidence.py --out evidence --skip-sitl \
             --unit build/sitl/tests/test_speed_limiter
 
       - name: unit test report
@@ -125,7 +133,7 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    container: ardupilot/ardupilot-dev-base:v0.0.29
+    container: ardupilot/ardupilot-dev-base:v0.1.3
     continue-on-error: ${{ matrix.frame == 'T150' && vars.T150_BLOCKING != 'true' }}
     strategy:
       fail-fast: false
@@ -150,13 +158,17 @@ jobs:
           name: sitl-arducopter
           path: build/sitl/bin
 
-      # the image doesn't have MAVProxy for the user the job runs as, and autotest needs it
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: autotest python packages
         shell: bash
         run: |
-          python3 -m pip install --user MAVProxy
-          python3 -m pip show MAVProxy pymavlink | grep -E "^(Name|Version)"
-          cd Tools/autotest && python3 -c "import arducopter" && echo "autotest imports OK"
+          python -m pip install pymavlink MAVProxy pexpect future lxml
+          python -m pip show MAVProxy pymavlink | grep -E "^(Name|Version)"
+          # fails here in seconds, rather than once per test, if autotest can't start
+          cd Tools/autotest && python autotest.py --help > /dev/null && echo "autotest starts OK"
 
       - name: speed limit autotests and gain sweep
         shell: bash
@@ -167,7 +179,6 @@ jobs:
           MA_SWEEP_PAIRS: ${{ github.event.inputs.sweep_pairs }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          export PATH="/github/home/.local/bin:$PATH"
           chmod +x build/sitl/bin/arducopter
           # the gust mission is written for the T150, the stock quad isn't flown that hard
           frame=(--skip SpeedLimitStabilizeGustMission)
@@ -175,14 +186,14 @@ jobs:
             frame=(--frame "$FRAME")
             export MA_SPEED_LIMIT_PID="$T150_PID"
           fi
-          python3 Tools/scripts/ma_test_evidence.py --out evidence --skip-unit --limits "$LIMIT" \
+          python Tools/scripts/ma_test_evidence.py --out evidence --skip-unit --limits "$LIMIT" \
             "${frame[@]}" --also SpeedLimitGainSweep
 
       - name: why the first test failed
         if: failure()
         shell: bash
         run: |
-          python3 - <<'EOF' || true
+          python - <<'EOF' || true
           import glob, json
           for path in glob.glob("evidence/*/results.json"):
               for t in json.load(open(path))["autotests"]:
@@ -216,9 +227,15 @@ jobs:
     if: always() && needs.autotest.result != 'skipped'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    container: ardupilot/ardupilot-dev-base:v0.0.29
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: python packages for the plots
+        run: python -m pip install pymavlink
 
       - uses: actions/download-artifact@v4
         with:
@@ -233,7 +250,7 @@ jobs:
             echo "no T150 results to merge"
             exit 0
           fi
-          python3 Tools/scripts/ma_test_evidence.py --merge T150-report "${found[@]}"
+          python Tools/scripts/ma_test_evidence.py --merge T150-report "${found[@]}"
           {
             echo "## T150 at every limit"
             cat T150-report/report.md
