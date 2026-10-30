@@ -9627,9 +9627,32 @@ class AutoTestCopter(AutoTest):
         self._assert_not_limited(w, "GUIDED")
         self.do_RTL(timeout=600)
 
+    def _speed_limit_check_log(self):
+        '''the SPDL and PIDL messages are in the flight log: the limiter acting in ALT_HOLD and not running
+        in the other modes'''
+        dfreader = self.dfreader_for_path(self.current_onboard_log_filepath())
+        count = {"SPDL": 0, "PIDL": 0}
+        acted, idle = False, False
+        while True:
+            m = dfreader.recv_match(type=["SPDL", "PIDL"])
+            if m is None:
+                break
+            count[m.get_type()] += 1
+            if m.get_type() == "SPDL":
+                acted = acted or (m.Mode == 1 and m.Act == 1 and m.OutT < m.DesT)
+                idle = idle or (m.Mode == 0 and m.Run == 0)
+        self.progress("log: %u SPDL and %u PIDL messages, limiter acting in ALT_HOLD=%s, idle in LOITER/POSHOLD=%s" %
+                      (count["SPDL"], count["PIDL"], acted, idle))
+        if not count["SPDL"] or not count["PIDL"]:
+            raise NotAchievedException("SPDL or PIDL missing from the log")
+        if not acted or not idle:
+            raise NotAchievedException("SPDL doesn't show the limiter acting in ALT_HOLD and idle elsewhere")
+
     def SpeedLimitModeTransitions(self):
         '''At the limit in ALT_HOLD, LOITER and POSHOLD then fly past it, and back in ALT_HOLD it's held again'''
         self._speed_limit_setup()
+        # attitude and PID logging, for SPDL and PIDL
+        self.set_parameter("LOG_BITMASK", int(self.get_parameter("LOG_BITMASK")) | (1 << 1) | (1 << 12))
         self._speed_limit_enable()
         self._speed_limit_loiter_fast()
         w = self._speed_limit_watch()
@@ -9648,6 +9671,7 @@ class AutoTestCopter(AutoTest):
             self._assert_speed_held(w, "ALT_HOLD after %s" % mode)
         self.set_rc(2, 1500)
         self.do_RTL(timeout=600)
+        self._speed_limit_check_log()
 
     def SpeedLimitEnableInFlight(self):
         '''Turning the limiter on well above the limit is no harsher than the pilot snapping the stick back'''

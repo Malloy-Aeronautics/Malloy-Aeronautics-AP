@@ -1,4 +1,5 @@
 #include "AC_AttitudeControl.h"
+#include <AP_Logger/AP_Logger.h>
 #include <AP_HAL/AP_HAL.h>
 
 extern const AP_HAL::HAL& hal;
@@ -734,6 +735,17 @@ void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_lim
     Vector3f attitude_error;
     // Ensure _attitude_target yaw error is clamped, then perform the same operation on the derated target used for control output.
     thrust_heading_rotation_angles(_attitude_target, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
+    // what the limiter saw and did this loop, for the SPDL log
+    Vector3f log_velocity;
+    const bool log_have_velocity = _ahrs.get_velocity_NED(log_velocity);
+    _speed_limit_log.running = log_have_velocity && _speed_limit_apply && mode_enable_speed_limit &&
+                               _speed_limit_mode_allowed && !_speed_limit_override;
+    _speed_limit_log.speed = log_have_velocity ? log_velocity.xy().length() : 0.0f;
+    _speed_limit_log.des_tilt = log_have_velocity ?
+        speed_limit_tilt_along_track(_attitude_target, log_velocity.xy()) : 0.0f;
+    _speed_limit_log.out_tilt = log_have_velocity ?
+        speed_limit_tilt_along_track(attitude_target_derated, log_velocity.xy()) : 0.0f;
+
     thrust_heading_rotation_angles(attitude_target_derated, attitude_body, attitude_error, _thrust_angle, _thrust_error_angle);
 
     // Compute the angular velocity corrections in the body frame from the attitude error
@@ -1264,4 +1276,64 @@ Quaternion AC_AttitudeControl::speed_limit_update(AC_PID &pid, float speed_limit
     if (!limiter_active) pid.relax_integrator(0.0f, 1.0f);
 
     return attitude_out;
+}
+
+void AC_AttitudeControl::Write_SpeedLimit() const
+{
+    if (!_speed_limit_apply) {
+        return;
+    }
+    const AP_PIDInfo &pid = _speed_limit_pid.get_pid_info();
+    const float max_tilt = _speed_limit_log.running ? constrain_float(pid.P + pid.I + pid.D + pid.FF, 0.0f, M_PI) : 0.0f;
+
+// @LoggerMessage: SPDL
+// @Description: Attitude speed limiter
+// @Field: TimeUS: Time since system startup
+// @Field: Lim: speed limit (ATC_SPD_LIM_VAL)
+// @Field: Spd: horizontal ground speed the limiter uses
+// @Field: DesT: lean along the direction of travel asked for by the pilot or the flight mode
+// @Field: MaxT: most lean along the direction of travel the limiter allows (its PID output)
+// @Field: OutT: lean along the direction of travel sent on to the attitude controller
+// @Field: Run: 1 if the limiter ran this loop (enabled, allowed in this flight mode, not overridden)
+// @Field: Act: 1 if the limiter reduced the lean this loop
+// @Field: Mode: 1 if the current flight mode uses the limiter
+// @Field: Ovr: 1 if the pilot override switch has turned the limiter off
+    AP::logger().Write("SPDL", "TimeUS,Lim,Spd,DesT,MaxT,OutT,Run,Act,Mode,Ovr",
+                       "snnddd----", "F00000----", "QfffffBBBB",
+                       AP_HAL::micros64(),
+                       (float)_speed_limit_value,
+                       _speed_limit_log.speed,
+                       degrees(_speed_limit_log.des_tilt),
+                       degrees(max_tilt),
+                       degrees(_speed_limit_log.out_tilt),
+                       uint8_t(_speed_limit_log.running),
+                       uint8_t(_speed_limit_active),
+                       uint8_t(_speed_limit_mode_allowed),
+                       uint8_t(_speed_limit_override));
+}
+
+void AC_AttitudeControl::Write_SpeedLimitPID() const
+{
+    if (!_speed_limit_apply) {
+        return;
+    }
+    const AP_PIDInfo &pid = _speed_limit_pid.get_pid_info();
+
+// @LoggerMessage: PIDL
+// @Description: Speed limiter PID: target is the limit, actual the ground speed (m/s), output the lean in radians
+// @Field: TimeUS: Time since system startup
+// @Field: Tar: desired value
+// @Field: Act: achieved value
+// @Field: Err: error between target and achieved
+// @Field: P: proportional part of PID
+// @Field: I: integral part of PID
+// @Field: D: derivative part of PID
+// @Field: FF: controller feed-forward portion of response
+// @Field: Dmod: scaler applied to D gain to reduce limit cycling
+// @Field: SRate: slew rate
+// @Field: Limit: 1 if I term is limited due to output saturation
+    AP::logger().Write("PIDL", PID_LABELS, PID_UNITS, PID_MULTS, PID_FMT,
+                       AP_HAL::micros64(),
+                       pid.target, pid.actual, pid.error, pid.P, pid.I, pid.D, pid.FF, pid.Dmod, pid.slew_rate,
+                       uint8_t(pid.limit));
 }

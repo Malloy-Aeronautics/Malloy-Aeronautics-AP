@@ -71,6 +71,10 @@ public:
 
     // whether the current flight mode wants the speed limiter, set by the vehicle every loop
     void set_speed_limit_mode_allowed(bool allowed) { _speed_limit_mode_allowed = allowed; }
+
+    // SPDL and PIDL log messages, written by the vehicle with its attitude and PID logging
+    void Write_SpeedLimit() const;
+    void Write_SpeedLimitPID() const;
     AC_AttitudeControl( AP_AHRS_View &ahrs,
                         const AP_Vehicle::MultiCopter &aparm,
                         AP_Motors& motors,
@@ -546,6 +550,14 @@ protected:
     bool                _speed_limit_active = false;   // limiter changed the target last loop
     bool                _speed_limit_override = false; // pilot has switched the limiter off
     bool                _speed_limit_mode_allowed = true; // flight mode uses the limiter
+
+    // what the limiter saw and did last loop, for the SPDL log
+    struct {
+        float speed;        // m/s
+        float des_tilt;     // rad along track, asked for
+        float out_tilt;     // rad along track, after the limiter
+        bool running;       // limiter ran this loop
+    } _speed_limit_log {};
     // References to external libraries
     const AP_AHRS_View&  _ahrs;
     const AP_Vehicle::MultiCopter &_aparm;
