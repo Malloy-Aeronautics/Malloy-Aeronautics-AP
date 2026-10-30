@@ -364,6 +364,7 @@ void Copter::update_flight_mode()
 {
     surface_tracking.invalidate_for_logging();  // invalidate surface tracking alt, flight mode will set to true if used
 
+    attitude_control->set_speed_limit_mode_allowed(flightmode->allows_speed_limit());
     flightmode->run();
 }
 

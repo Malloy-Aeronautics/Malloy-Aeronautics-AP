@@ -45,8 +45,36 @@
 
 #define AC_ATTITUDE_CONTROL_THR_MIX_DEFAULT             0.5f  // ratio controlling the max throttle output during competing requests of low throttle from the pilot (or autopilot) and higher throttle for attitude control.  Higher favours Attitude over pilot input
 
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_P               2.0f
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_I               0.05f
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_D               0.5f
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_IMAX            M_PI_2
+#define AC_ATTITUDE_CONTROL_SPEED_LIMIT_MIN_SPEED       0.1f  // m/s, limiter does nothing below this
+
 class AC_AttitudeControl {
 public:
+    // speed limiter helpers, static so they can be unit tested
+
+    // tilt of the thrust vector along vel_ne in rad, positive = accelerating, negative = braking
+    static float speed_limit_tilt_along_track(const Quaternion &attitude, const Vector2f &vel_ne);
+
+    // reduce the along track tilt of attitude_target to max_tilt_along_track, keeping the cross track part.
+    // returns true if it changed anything
+    static bool speed_limit_derate(const Quaternion &attitude_target, const Vector2f &vel_ne,
+                                   float max_tilt_along_track, Quaternion &attitude_out);
+
+    // run the speed PID and derate the target for one loop.
+    // limiter_active should be last loop's value, it gets updated here
+    static Quaternion speed_limit_update(AC_PID &pid, float speed_limit, const Quaternion &attitude_target, const Vector2f &vel_ne, bool &limiter_active);
+    void set_speed_limit_override(bool override) { _speed_limit_override = override; }
+    bool get_speed_limit_override() const { return _speed_limit_override; }
+
+    // whether the current flight mode wants the speed limiter, set by the vehicle every loop
+    void set_speed_limit_mode_allowed(bool allowed) { _speed_limit_mode_allowed = allowed; }
+
+    // SPDL and PIDL log messages, written by the vehicle with its attitude and PID logging
+    void Write_SpeedLimit() const;
+    void Write_SpeedLimitPID() const;
     AC_AttitudeControl( AP_AHRS_View &ahrs,
                         const AP_Vehicle::MultiCopter &aparm,
                         AP_Motors& motors,
@@ -61,7 +89,8 @@ public:
         _throttle_rpy_mix(AC_ATTITUDE_CONTROL_THR_MIX_DEFAULT),
         _ahrs(ahrs),
         _aparm(aparm),
-        _motors(motors)
+        _motors(motors),
+        _speed_limit_pid(AC_ATTITUDE_CONTROL_SPEED_LIMIT_P, AC_ATTITUDE_CONTROL_SPEED_LIMIT_I, AC_ATTITUDE_CONTROL_SPEED_LIMIT_D, 0.0f, AC_ATTITUDE_CONTROL_SPEED_LIMIT_IMAX, 0.0f, 0.0f, 0.0f, dt)
         {
             _singleton = this;
             AP_Param::setup_object_defaults(this, var_info);
@@ -320,7 +349,7 @@ public:
     Vector3f euler_accel_limit(const Vector3f &euler_rad, const Vector3f &euler_accel);
 
     // Calculates the body frame angular velocities to follow the target attitude
-    void attitude_controller_run_quat();
+    void attitude_controller_run_quat(bool mode_enable_speed_limit = true);
 
     // thrust_heading_rotation_angles - calculates two ordered rotations to move the attitude_body quaternion to the attitude_target quaternion.
     // The maximum error in the yaw axis is limited based on the angle yaw P value and acceleration.
@@ -514,6 +543,21 @@ protected:
     // angle scale used for last loop, used for logging
     Vector3f            _angle_P_scale_used;
 
+    // parameters used for speed limit controller
+    AP_Int8             _speed_limit_apply;
+    AP_Float            _speed_limit_value;
+    AC_PID              _speed_limit_pid;
+    bool                _speed_limit_active = false;   // limiter changed the target last loop
+    bool                _speed_limit_override = false; // pilot has switched the limiter off
+    bool                _speed_limit_mode_allowed = true; // flight mode uses the limiter
+
+    // what the limiter saw and did last loop, for the SPDL log
+    struct {
+        float speed;        // m/s
+        float des_tilt;     // rad along track, asked for
+        float out_tilt;     // rad along track, after the limiter
+        bool running;       // limiter ran this loop
+    } _speed_limit_log {};
     // References to external libraries
     const AP_AHRS_View&  _ahrs;
     const AP_Vehicle::MultiCopter &_aparm;

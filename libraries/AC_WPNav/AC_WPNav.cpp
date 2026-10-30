@@ -164,6 +164,13 @@ void AC_WPNav::wp_and_spline_init(float speed_cms, Vector3f stopping_point)
     _pos_control.init_z_controller_stopping_point();
     _pos_control.init_xy_controller_stopping_point();
 
+    // the speed parameters as they are now. Set at construction they hold the defaults from
+    // before the parameters loaded, and the first update_wpnav() would then see WPNAV_SPEED as
+    // changed and replace speed_cms (RTL_SPEED, for one) with it
+    _last_wp_speed_cms = _wp_speed_cms;
+    _last_wp_speed_up_cms = _wp_speed_up_cms;
+    _last_wp_speed_down_cms = get_default_speed_down();
+
     // initialize the desired wp speed if not already done
     _wp_desired_speed_xy_cms = is_positive(speed_cms) ? speed_cms : _wp_speed_cms;
     _wp_desired_speed_xy_cms = MAX(_wp_desired_speed_xy_cms, WPNAV_WP_SPEED_MIN);

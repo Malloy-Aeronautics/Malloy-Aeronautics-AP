@@ -1,0 +1,282 @@
+name: test speed limiter
+
+# Unit tests, then the SpeedLimit autotests on the quad at 5 m/s and the T150 at 5, 17 and
+# 25 m/s. Pushes to a feature branch run it until there's a PR, then the PR does.
+# Require speed-limit-passed. T150 failures only block once the T150_BLOCKING variable is true.
+on:
+  push:
+    branches:
+      - 'feature/**'
+    paths:
+      - 'libraries/AC_AttitudeControl/**'
+      - 'libraries/AC_PID/**'
+      - 'ArduCopter/**'
+      - 'Tools/autotest/arducopter.py'
+      - 'Tools/autotest/models/T150_sim.*'
+      - 'Tools/scripts/ma_test_evidence.py'
+      - '.github/workflows/test_speed_limiter.yml'
+  pull_request:
+    branches:
+      - 'release/**'
+    paths:
+      - 'libraries/AC_AttitudeControl/**'
+      - 'libraries/AC_PID/**'
+      - 'ArduCopter/**'
+      - 'Tools/autotest/arducopter.py'
+      - 'Tools/autotest/models/T150_sim.*'
+      - 'Tools/scripts/ma_test_evidence.py'
+      - '.github/workflows/test_speed_limiter.yml'
+  workflow_dispatch:
+    inputs:
+      sweep_pairs:
+        description: 'P:I pairs for the gain sweep, e.g. 0.05:0.02,0.1:0.02,0.2:0.02 (empty: full P and I sweep)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speed-limit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # T150 tuning
+  T150_PID: 'P=0.1,I=0.02,D=0'
+  # same image and Python as the sitl job in ma_ci.yml: autotest needs 3.9 or newer, waf in
+  # this tree needs 3.10 or older
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.pr.outputs.run }}
+    steps:
+      - name: open pull request for this branch
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            open="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json baseRefName \
+                    --jq '[.[] | select(.baseRefName | startswith("release/"))] | length')"
+            if [ "$open" -gt 0 ]; then
+              echo "::notice::$BRANCH has an open pull request, its pull request run tests this commit"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container: ardupilot/ardupilot-dev-base:v0.1.3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: python packages for the build
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan
+
+      - name: build SITL and the unit test
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python ./waf configure --board sitl
+          python ./waf copter
+          python ./waf --target tests/test_speed_limiter
+
+      - name: unit tests
+        shell: bash
+        run: |
+          python Tools/scripts/ma_test_evidence.py --out evidence --skip-sitl \
+            --unit build/sitl/tests/test_speed_limiter
+
+      - name: unit test report
+        if: always()
+        shell: bash
+        run: cat evidence/*/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: speed-limit-unit-tests
+          path: evidence/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sitl-arducopter
+          path: build/sitl/bin/arducopter
+          if-no-files-found: error
+          retention-days: 3
+
+  autotest:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container: ardupilot/ardupilot-dev-base:v0.1.3
+    continue-on-error: ${{ matrix.frame == 'T150' && vars.T150_BLOCKING != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - frame: quad
+            limit: 5
+          - frame: T150
+            limit: 5
+          - frame: T150
+            limit: 17
+          - frame: T150
+            limit: 25
+    name: autotest ${{ matrix.frame }} @ ${{ matrix.limit }} m/s
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sitl-arducopter
+          path: build/sitl/bin
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: autotest python packages
+        shell: bash
+        run: |
+          python -m pip install pymavlink MAVProxy pexpect future lxml
+          python -m pip show MAVProxy pymavlink | grep -E "^(Name|Version)"
+          # fails here in seconds, rather than once per test, if autotest can't start
+          cd Tools/autotest && python autotest.py --help > /dev/null && echo "autotest starts OK"
+
+      - name: speed limit autotests and gain sweep
+        shell: bash
+        env:
+          FRAME: ${{ matrix.frame }}
+          LIMIT: ${{ matrix.limit }}
+          MA_SWEEP_MODE: 'ALT_HOLD,STABILIZE'
+          MA_SWEEP_PAIRS: ${{ github.event.inputs.sweep_pairs }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          chmod +x build/sitl/bin/arducopter
+          # the gust mission is written for the T150, the stock quad isn't flown that hard
+          frame=(--skip SpeedLimitStabilizeGustMission)
+          if [ "$FRAME" != "quad" ]; then
+            frame=(--frame "$FRAME")
+            export MA_SPEED_LIMIT_PID="$T150_PID"
+          fi
+          python Tools/scripts/ma_test_evidence.py --out evidence --skip-unit --limits "$LIMIT" \
+            "${frame[@]}" --also SpeedLimitGainSweep
+
+      - name: why the first test failed
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'EOF' || true
+          import glob, json
+          for path in glob.glob("evidence/*/results.json"):
+              for t in json.load(open(path))["autotests"]:
+                  if t["result"] == "FAIL":
+                      print(t["name"], ":", t["reason"])
+                      out = glob.glob(path.replace("results.json", t["dir"] + "/output.txt"))
+                      if out:
+                          print("".join(open(out[0]).readlines()[-40:]))
+                      raise SystemExit
+          EOF
+
+      - name: report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## ${{ matrix.frame }} at ${{ matrix.limit }} m/s"
+            cat evidence/*/report.md
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: speed-limit-evidence-${{ matrix.frame }}-${{ matrix.limit }}ms
+          path: evidence/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  report:
+    needs: autotest
+    if: always() && needs.autotest.result != 'skipped'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: python packages for the plots
+        run: python -m pip install pymavlink
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: speed-limit-evidence-T150-*
+          path: runs
+
+      - name: merge
+        shell: bash
+        run: |
+          mapfile -t found < <(find runs -name results.json -printf '%h\n' | sort)
+          if [ "${#found[@]}" -eq 0 ]; then
+            echo "no T150 results to merge"
+            exit 0
+          fi
+          python Tools/scripts/ma_test_evidence.py --merge T150-report "${found[@]}"
+          {
+            echo "## T150 at every limit"
+            cat T150-report/report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speed-limit-report-T150
+          path: T150-report/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  speed-limit-passed:
+    needs: [gate, build, autotest]
+    if: always() && needs.gate.outputs.run != 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: speed limiter checks passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "a required job finished with: $r"
+              exit 1
+            fi
+          done
