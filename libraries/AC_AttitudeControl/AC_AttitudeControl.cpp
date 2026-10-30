@@ -715,7 +715,7 @@ void AC_AttitudeControl::attitude_controller_run_quat(bool mode_enable_speed_lim
     Quaternion attitude_target_derated = _attitude_target;
 
     // Check if speed limit enabled, if so run speed limiter
-    if (_speed_limit_apply && mode_enable_speed_limit && !_speed_limit_override) {
+    if (_speed_limit_apply && mode_enable_speed_limit && _speed_limit_mode_allowed && !_speed_limit_override) {
         Vector3f vehicle_velocity;
         Location vehicle_location;
         // Check that vehicle velocity and location are valid

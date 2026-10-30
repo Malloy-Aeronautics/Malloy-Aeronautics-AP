@@ -70,6 +70,9 @@ public:
     virtual bool allows_save_trim() const { return false; }
     virtual bool allows_autotune() const { return false; }
     virtual bool allows_flip() const { return false; }
+    // the attitude speed limiter only acts in modes flown on the pilot's lean angle, the
+    // others hold their own WPNAV/LOIT/RTL speeds
+    virtual bool allows_speed_limit() const { return false; }
 
     // return a string for this flightmode
     virtual const char *name() const = 0;
@@ -372,6 +375,7 @@ public:
     // inherit constructor
     using Mode::Mode;
     Number mode_number() const override { return Number::ALT_HOLD; }
+    bool allows_speed_limit() const override { return true; }
 
     bool init(bool ignore_checks) override;
     void run() override;
@@ -1465,6 +1469,7 @@ public:
     // inherit constructor
     using Mode::Mode;
     Number mode_number() const override { return Number::STABILIZE; }
+    bool allows_speed_limit() const override { return true; }
 
     virtual void run() override;
 
