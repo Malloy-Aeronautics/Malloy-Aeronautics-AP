@@ -1,9 +1,9 @@
 #include "Copter.h"
 
 /*
-  Ground speed limit (SPD_LIM_*): in STABILIZE and ALT_HOLD, going over the limit sends the
-  vehicle home. The other modes fly their own WPNAV/LOIT/RTL speeds and are not checked. Runs
-  at 10Hz from the scheduler.
+  Ground speed limit: in STABILIZE and ALT_HOLD, going over the limit sends the
+  vehicle home. The other modes fly their own WPNAV/LOIT/RTL speeds and are not checked. Off
+  while the EKF isn't using GPS.
 */
 void Copter::speed_limit_check()
 {
@@ -13,6 +13,25 @@ void Copter::speed_limit_check()
     // nothing to check on the ground or while the motors are still spooling up
     const bool flying = motors->armed() && !ap.land_complete &&
                         motors->get_spool_state() == AP_Motors::SpoolState::THROTTLE_UNLIMITED;
+
+    // the speed is only trusted while the EKF is navigating on GPS. It stops within a few seconds
+    // of losing the GPS, sooner than it gives up on the velocity it's dead reckoning
+    nav_filter_status filt_status {};
+    const bool using_gps = ahrs.get_filter_status(filt_status) && filt_status.flags.using_gps;
+    switch (g2.speed_limit.update_gps(using_gps, AP_HAL::millis())) {
+    case -1:
+        if (g2.speed_limit.enabled()) {
+            gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit off: no GPS");
+        }
+        break;
+    case 1:
+        if (g2.speed_limit.enabled()) {
+            gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit on: GPS back");
+        }
+        break;
+    default:
+        break;
+    }
 
     Vector3f vel_ned;
     const bool have_speed = ahrs.get_velocity_NED(vel_ned);

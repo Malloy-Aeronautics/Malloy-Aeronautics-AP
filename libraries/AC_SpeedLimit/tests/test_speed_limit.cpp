@@ -181,4 +181,41 @@ TEST(SpeedLimitRTL, EnablingInFlightWhileOver)
     EXPECT_EQ(l.fly(15.0f, 5), 1);
 }
 
+TEST(SpeedLimitRTL, GPSLossTurnsItOff)
+{
+    Limiter l(10.0f);
+    EXPECT_EQ(l.limit.update_gps(true, 1000), 0);
+    EXPECT_EQ(l.limit.update_gps(false, 1100), -1);        // reported once
+    EXPECT_EQ(l.limit.update_gps(false, 1200), 0);
+    EXPECT_EQ(l.fly(30.0f, 50), 0);
+}
+
+TEST(SpeedLimitRTL, GPSBackTurnsItOnAfterRecoverTime)
+{
+    Limiter l(10.0f);
+    l.limit.update_gps(false, 1000);
+    uint32_t t = 2000;
+    EXPECT_EQ(l.limit.update_gps(true, t), 0);               // back, timer starts
+    t += AC_SpeedLimit::GPS_RECOVER_MS - 100;
+    EXPECT_EQ(l.limit.update_gps(true, t), 0);
+    EXPECT_EQ(l.fly(30.0f, 5), 0);
+    t += 100;
+    EXPECT_EQ(l.limit.update_gps(true, t), 1);               // on again, reported once
+    EXPECT_EQ(l.limit.update_gps(true, t + 100), 0);
+    int first;
+    EXPECT_EQ(l.fly(30.0f, 5, true, &first), 1);             // still over: home straight away
+    EXPECT_EQ(first, 0);
+}
+
+TEST(SpeedLimitRTL, GPSDropoutDuringRecoveryRestartsTheWait)
+{
+    Limiter l(10.0f);
+    l.limit.update_gps(false, 1000);
+    l.limit.update_gps(true, 2000);
+    l.limit.update_gps(false, 4000);                          // lost again before it recovered
+    EXPECT_EQ(l.limit.update_gps(true, 4500), 0);
+    EXPECT_EQ(l.limit.update_gps(true, 4500 + AC_SpeedLimit::GPS_RECOVER_MS - 1), 0);
+    EXPECT_EQ(l.limit.update_gps(true, 4500 + AC_SpeedLimit::GPS_RECOVER_MS), 1);
+}
+
 AP_GTEST_MAIN()
