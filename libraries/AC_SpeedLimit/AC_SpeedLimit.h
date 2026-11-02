@@ -13,12 +13,15 @@
   The pilot can turn it off with an RC switch (override); a radio failsafe turns it back on.
 
   Without GPS the ground speed can't be trusted (the EKF carries on with a velocity that drifts),
-  so the limit is switched off as soon as the EKF stops using GPS, and back on once it has been
-  using it again for GPS_RECOVER_MS. This goes on the EKF, not on the GPS fix type.
+  so the limit is switched off as soon as the GPS isn't usable: the EKF has stopped using it, or no
+  GPS that is still sending sees GPS_MIN_SATS satellites. It comes back on once the GPS has been
+  usable again for GPS_RECOVER_MS.
 */
 class AC_SpeedLimit {
 public:
-    static constexpr uint32_t GPS_RECOVER_MS = 3000;    // EKF back on GPS this long: limit on again
+    static constexpr uint8_t GPS_MIN_SATS = 6;          // fewer on every GPS: limit off
+    static constexpr uint32_t GPS_TIMEOUT_MS = 1000;    // a GPS silent this long doesn't count
+    static constexpr uint32_t GPS_RECOVER_MS = 3000;    // GPS usable again this long: limit on again
 
     AC_SpeedLimit();
 
@@ -38,9 +41,12 @@ public:
 
     float limit() const { return _limit; }          // m/s
 
-    // tell it whether the EKF is using GPS. Returns +1 when that turns the limit back on, -1 when
+    // tell it whether the GPS is usable. Returns +1 when that turns the limit back on, -1 when
     // it turns it off, 0 otherwise
-    int8_t update_gps(bool using_gps, uint32_t now_ms);
+    int8_t update_gps(bool gps_usable, uint32_t now_ms);
+
+    // false while the GPS is lost or hasn't been back for GPS_RECOVER_MS
+    bool gps_ok() const { return !_gps_lost; }
 
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -54,5 +60,5 @@ private:
     bool _triggered = false;
     bool _override = false;
     bool _gps_lost = false;
-    uint32_t _gps_back_ms = 0;      // when the EKF started using GPS again, 0 = not yet
+    uint32_t _gps_back_ms = 0;      // when the GPS became usable again, 0 = not yet
 };

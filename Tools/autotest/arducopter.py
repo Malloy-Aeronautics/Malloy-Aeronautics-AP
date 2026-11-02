@@ -9764,7 +9764,7 @@ class AutoTestCopter(AutoTest):
         self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=10)
         off_after = self.get_sim_time_cached() - t_lost
         self.progress("GPS lost: limit off after %.1fs" % off_after)
-        if off_after > 5:
+        if off_after > 2:
             raise NotAchievedException("limit only switched off %.1fs after the GPS went" % off_after)
 
         # well over the limit with no GPS: nothing knows the real speed, so no RTL
@@ -9786,6 +9786,48 @@ class AutoTestCopter(AutoTest):
         self.wait_mode('RTL', timeout=5)
         self.set_rc(2, 1500)
         self.progress("GPS back: limit on after %.1fs, then '%s'" % (on_after, text))
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitOneGPSLostStaysOn(self):
+        '''With two GPS fitted, losing one isn't a GPS loss: the limit stays on and still sends it home'''
+        self._speed_limit_setup()
+        if self.get_parameter("GPS_TYPE2") == 0:
+            # the stock quad has one GPS (the T150 already has two)
+            self.set_parameters({"GPS_TYPE2": 1, "SIM_GPS2_DISABLE": 0, "GPS_AUTO_SWITCH": 1})
+            self.reboot_sitl()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameters({"SIM_GPS_DISABLE": 1})
+        self.delay_sim_time(8)
+        if self.statustext_in_collections("Speed limit off"):
+            raise NotAchievedException("limit switched off with the second GPS still working")
+        self.progress("first GPS lost, second still working: limit still on")
+        self.set_rc(2, 1000)
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=30 + self._speed_limit_spinup()).text
+        self.wait_mode('RTL', timeout=5)
+        self.set_rc(2, 1500)
+        self.progress("on the second GPS: '%s'" % text)
+        self.set_parameters({"SIM_GPS_DISABLE": 0})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitLowSatsSwitchesOff(self):
+        '''A GPS that keeps its fix but drops under 6 satellites isn't trusted: the limit goes off until they're back'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_low = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_NUMSATS": 5, "SIM_GPS2_NUMSATS": 5})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.progress("5 satellites: limit off after %.1fs" % (self.get_sim_time_cached() - t_low))
+        self.set_parameters({"SIM_GPS_NUMSATS": 10, "SIM_GPS2_NUMSATS": 10})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
+        self.progress("10 satellites: limit on again")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitPilotOverride(self):
@@ -10076,6 +10118,8 @@ class AutoTestCopter(AutoTest):
             self.SpeedLimitRCFailsafeRTL,
             self.SpeedLimitVibration,
             self.SpeedLimitGPSLossSwitchesOff,
+            self.SpeedLimitOneGPSLostStaysOn,
+            self.SpeedLimitLowSatsSwitchesOff,
             self.SpeedLimitPilotOverride,
             self.SpeedLimitFenceBreachAltHold,
             self.RTL_braking_distance,
