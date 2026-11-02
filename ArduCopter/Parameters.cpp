@@ -1169,6 +1169,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     AP_GROUPINFO("TKOFF_RPM_MIN", 58, ParametersG2, takeoff_rpm_min, 0),
 #endif
 
+    // @Group: SPD_LIM_
+    // @Path: ../libraries/AC_SpeedLimit/AC_SpeedLimit.cpp
+    AP_SUBGROUPINFO(speed_limit, "SPD_LIM_", 60, ParametersG2, AC_SpeedLimit),
+
     // ID 62 is reserved for the SHOW_... parameters from the Skybrush fork at
     // https://github.com/skybrush-io/ardupilot
 
