@@ -36,9 +36,9 @@ void AC_SpeedLimit::set_override(bool override_on)
     _triggered = false;
 }
 
-int8_t AC_SpeedLimit::update_gps(bool using_gps, uint32_t now_ms)
+int8_t AC_SpeedLimit::update_gps(bool gps_usable, uint32_t now_ms)
 {
-    if (!using_gps) {
+    if (!gps_usable) {
         _gps_back_ms = 0;
         if (!_gps_lost) {
             _gps_lost = true;
