@@ -939,6 +939,8 @@ private:
     void userhook_auxSwitch2(const RC_Channel::AuxSwitchPos ch_flag);
     void userhook_auxSwitch3(const RC_Channel::AuxSwitchPos ch_flag);
 
+    void speed_limit_rtl();
+
 #if MODE_ACRO_ENABLED == ENABLED
 #if FRAME_CONFIG == HELI_FRAME
     ModeAcro_Heli mode_acro;

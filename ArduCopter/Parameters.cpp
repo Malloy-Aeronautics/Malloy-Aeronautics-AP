@@ -1172,6 +1172,20 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // ID 62 is reserved for the SHOW_... parameters from the Skybrush fork at
     // https://github.com/skybrush-io/ardupilot
 
+    // @Param: SPD_LIM_RTL_EN
+    // @DisplayName: Speed limit RTL enable
+    // @Description: If the speed limit is enabled and the set value is exceeded, the vehicle will switch to RTL
+    // @Range: 0 1
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_RTL_EN", 59, ParametersG2, spd_lim_rtl_en, 0),
+
+    // @Param: SPD_LIM_RTL_VAL
+    // @DisplayName: Speed limit RTL trigger speed
+    // @Description: If the speed limit is enabled and the set value is exceeded, the vehicle will switch to RTL
+    // @Range: 0 1
+    // @User: Standard
+    AP_GROUPINFO("SPD_LIM_RTL_VAL", 60, ParametersG2, spd_lim_rtl_val, 10.0f),
+
     AP_GROUPEND
 };
 

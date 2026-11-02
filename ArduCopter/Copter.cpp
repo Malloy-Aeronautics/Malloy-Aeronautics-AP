@@ -254,6 +254,7 @@ const AP_Scheduler::Task Copter::scheduler_tasks[] = {
 #if STATS_ENABLED == ENABLED
     SCHED_TASK_CLASS(AP_Stats,             &copter.g2.stats,            update,           1, 100, 171),
 #endif
+    SCHED_TASK(speed_limit_rtl, 10, 50, 174)
 };
 
 void Copter::get_scheduler_tasks(const AP_Scheduler::Task *&tasks,
@@ -755,6 +756,64 @@ bool Copter::get_rate_bf_targets(Vector3f& rate_bf_targets) const
 {
     rate_bf_targets = attitude_control->rate_bf_targets();
     return true;
+}
+
+constexpr float speed_lim_rtl_max_gps_speed_accuracy = 5.0f;
+constexpr float speed_lim_rtl_min_active_speed = 0.1f;
+
+void Copter::speed_limit_rtl() {
+    // Check if speed limit enabled
+    if (!g2.spd_lim_rtl_en) return;
+
+    // Check if in correct modes
+    Mode::Number mode = static_cast<Mode::Number>(get_mode());
+    if (!(mode == Mode::Number::STABILIZE || mode == Mode::Number::ALT_HOLD)) return;
+
+    Vector2f ground_velocity = inertial_nav.get_velocity_xy_cms() * 0.01f;
+    nav_filter_status ekf_status = inertial_nav.get_filter_status();
+    bool ekf_healthy = true, gps_healthy = false;
+
+    //// Checks to prove velocity health ////
+
+    // Check ekf status
+    ekf_healthy &= static_cast<bool>(ekf_status.flags.horiz_vel);
+
+    // Check GPS state. Set gps_healthy if one healthy instnace is found.
+    for (int gps_instance = 0; gps_instance < gps.num_sensors(); ++gps_instance) {
+        bool gps_healthy_instance = true;
+
+        // Check number of satellites, 4 is min required for 3d fix
+        gps_healthy &= gps.num_sats() >= 4;
+
+        // Check speed accuracy
+        float speed_accuracy;
+        gps_healthy &= gps.speed_accuracy(gps_instance, speed_accuracy);
+        gps_healthy &= speed_accuracy <= speed_lim_rtl_max_gps_speed_accuracy;
+
+        // Check fix state
+        AP_GPS::GPS_Status gps_status = gps.status();
+        gps_healthy &=
+            gps_status == AP_GPS::GPS_Status::GPS_OK_FIX_3D ||
+            gps_status == AP_GPS::GPS_Status::GPS_OK_FIX_3D_DGPS ||
+            gps_status == AP_GPS::GPS_Status::GPS_OK_FIX_3D_RTK_FLOAT ||
+            gps_status == AP_GPS::GPS_Status::GPS_OK_FIX_3D_RTK_FIXED;
+
+        gps_healthy |= gps_healthy_instance;
+    }
+
+    if (!ekf_healthy || !gps_healthy) return;
+
+    //// Velocity healthy, enforce speed limit ////
+
+    float speed = ground_velocity.length();
+
+    if (
+        speed >= speed_lim_rtl_min_active_speed &&
+        speed > g2.spd_lim_rtl_val
+    ) {
+        set_mode(Mode::Number::RTL, ModeReason::SPEED_LIMIT_EXCEEDED);
+        gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit exceeded - Switched to RTL");
+    }
 }
 
 /*
