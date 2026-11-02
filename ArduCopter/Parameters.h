@@ -2,6 +2,7 @@
 
 #include <AP_Common/AP_Common.h>
 #include "RC_Channel.h"
+#include <AC_SpeedLimit/AC_SpeedLimit.h>
 #include <AP_Proximity/AP_Proximity.h>
 
 #if GRIPPER_ENABLED == ENABLED
@@ -675,6 +676,9 @@ public:
 #if HAL_WITH_ESC_TELEM && FRAME_CONFIG != HELI_FRAME
     AP_Int16 takeoff_rpm_min;
 #endif
+
+    // ground speed limit, switches to RTL when it's exceeded
+    AC_SpeedLimit speed_limit;
 };
 
 extern const AP_Param::Info        var_info[];
