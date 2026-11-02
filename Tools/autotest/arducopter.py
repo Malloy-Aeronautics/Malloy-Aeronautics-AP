@@ -9296,8 +9296,9 @@ class AutoTestCopter(AutoTest):
         self.disarm_vehicle(force=True)
 
     # ------------------------------------------------------------------------------------------
-    # Speed limit: over the limit in STABILIZE or ALT_HOLD switches to RTL straight
-    # away, the other modes aren't checked.
+    # Speed limit (SPD_LIM_*): over the limit in STABILIZE or ALT_HOLD switches to RTL straight
+    # away, the other modes aren't checked. Set MA_SPEED_LIMIT and MA_SPEED_LIMIT_FRAME to fly
+    # these at another limit or airframe.
     # ------------------------------------------------------------------------------------------
     SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT", "5"))
     SPEED_MAX = 1.03           # "over the limit" for the modes that aren't checked
@@ -9325,10 +9326,6 @@ class AutoTestCopter(AutoTest):
         )
         self.set_parameters({"FENCE_ENABLE": 0, "AVOID_ENABLE": 0})
 
-    def _speed_limit_scaled(self):
-        '''anything other than the stock quad at 5 m/s'''
-        return self.SPEED_LIMIT != 5 or os.environ.get("MA_SPEED_LIMIT_FRAME", "") != ""
-
     def _speed_limit_setup(self):
         '''airframe, and the limit off to start with. RTL isn't judged, it's given a nav speed that gets
         it home in reasonable time from wherever the higher limits leave it'''
@@ -9336,7 +9333,8 @@ class AutoTestCopter(AutoTest):
         self.progress("speed limit %.1f m/s on %s" % (self.SPEED_LIMIT, frame))
         self._speed_limit_frame()
         self.set_parameters({"SPD_LIM_EN": 0, "SPD_LIM_VAL": self.SPEED_LIMIT})
-        if self._speed_limit_scaled():
+        # anything other than the stock quad at 5 m/s needs a faster RTL to get home in good time
+        if self.SPEED_LIMIT != 5 or os.environ.get("MA_SPEED_LIMIT_FRAME", ""):
             self.set_parameters({"RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
 
     def _speed_limit_enable(self, limit=None):
@@ -9346,29 +9344,27 @@ class AutoTestCopter(AutoTest):
         })
 
     def _speed_limit_nav_cms(self):
-        '''cm/s'''
+        '''cm/s, comfortably above the limit'''
         return max(1500, int(150 * self.SPEED_LIMIT))
 
     def _speed_limit_well_over(self):
-        '''clearly over the limit'''
+        '''clearly over the limit, without asking more than the airframe's top speed'''
         return min(self.SPEED_LIMIT * 1.5, self.SPEED_LIMIT + 5)
 
     def _speed_limit_spinup(self):
         '''seconds of full stick to get up to speed'''
         return 15 + max(0, self.SPEED_LIMIT - 5)
 
-    def _speed_limit_tailwind_over(self):
-        '''a tailwind that pushes it past the limit'''
-        return self.SPEED_LIMIT + max(3, 0.15 * self.SPEED_LIMIT)
-
     def _speed_limit_loiter_fast(self):
-        '''LOITER faster than the limit.'''
+        '''LOITER faster than the limit. The T150's 20 deg LOIT_ANG_MAX can't reach 25 m/s, so above
+        20 m/s it gets the full ANGLE_MAX'''
         self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms()})
         if self.SPEED_LIMIT > 20:
             self.set_parameters({"LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
 
     def _speed_limit_watch(self, limit=None):
-        '''track true speed, EKF speed and the switch to RTL for the rest of the test.'''
+        '''track true speed, EKF speed and the switch to RTL for the rest of the test. reset() starts a
+        new window; w.limit is the limit the EKF speed is compared with'''
         rtl_mode = self.get_mode_from_mode_mapping('RTL')
         test = self
 
@@ -9419,17 +9415,6 @@ class AutoTestCopter(AutoTest):
         if w.min_true > w.max_true:
             raise NotAchievedException("no SIM_STATE received, can't check the true speed")
 
-    def _speed_limit_tailwind(self, speed):
-        '''wind from behind '''
-        heading = self.assert_receive_message('VFR_HUD').heading
-        self.set_parameters({
-            "SIM_WIND_T": 1,
-            "SIM_WIND_TURB": 0,
-            "SIM_WIND_SPD": speed,
-            "SIM_WIND_DIR": (heading + 180) % 360,
-        })
-        self.progress("tailwind %.1f m/s towards heading %d" % (speed, heading))
-
     def _speed_limit_fly_forward(self, mode='ALT_HOLD', alt=20, settle=0):
         '''take off and hold full forward stick'''
         self.takeoff(alt, mode=mode)
@@ -9437,11 +9422,10 @@ class AutoTestCopter(AutoTest):
         if settle:
             self.delay_sim_time(settle)
 
-    def _speed_limit_messages(self):
-        return [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("Speed limit:")]
-
     def _speed_limit_wait_rtl(self, w, what, timeout=None, over_since=None):
-        '''wait for the speed limit to switch to RTL, check it came straight after the EKF speed.'''
+        '''wait for the speed limit to switch to RTL, check it came straight after the EKF speed went
+        over the limit and that the vehicle said why. over_since: sim time it was already over the
+        limit from (the limit turned on or lowered). Returns the delay.'''
         timeout = timeout if timeout is not None else 30 + self._speed_limit_spinup()
         tstart = self.get_sim_time()
         while w.rtl_t is None:
@@ -9469,7 +9453,7 @@ class AutoTestCopter(AutoTest):
         return delay
 
     def _speed_limit_assert_no_trigger(self, w, what, no_rtl=True):
-        msgs = self._speed_limit_messages()
+        msgs = [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("Speed limit:")]
         if msgs:
             raise NotAchievedException("%s: the speed limit triggered (%s)" % (what, msgs[0]))
         if no_rtl and (w.saw_rtl or self.mode_is('RTL')):
@@ -9494,18 +9478,14 @@ class AutoTestCopter(AutoTest):
         self.progress("cruising at %.2f m/s on a part stick, limit set to %.1f m/s" % (v, limit))
         return v, limit
 
-    def _speed_limit_set_mode_nowait(self, mode):
-        '''ask for a mode without waiting for it: going over the limit can switch to RTL again before
-        change_mode() sees the new mode'''
-        self.mav.set_mode(self.get_mode_from_mode_mapping(mode))
-
     def _speed_limit_reenter(self, mode, what):
         '''from RTL straight back into `mode` with full forward stick: it has to be sent home again.
         Judged on the vehicle's own message, the watch can't tell the old RTL from the new one'''
         self.context_clear_collection('STATUSTEXT')
         gs = self.assert_receive_message('VFR_HUD').groundspeed
         self.set_rc(2, 1000)
-        self._speed_limit_set_mode_nowait(mode)
+        # not change_mode(): it can be sent home again before change_mode() sees the new mode
+        self.mav.set_mode(self.get_mode_from_mode_mapping(mode))
         text = self.wait_statustext("Speed limit:", check_context=True, timeout=30 + self._speed_limit_spinup()).text
         self.set_rc(2, 1500)
         self.wait_mode('RTL', timeout=5)
@@ -9682,7 +9662,11 @@ class AutoTestCopter(AutoTest):
         self._speed_limit_enable()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
-        self._speed_limit_tailwind(self._speed_limit_tailwind_over())
+        # from behind (SIM_WIND_DIR is where it comes from), over the limit but under the T150's top speed
+        wind = self.SPEED_LIMIT + max(3, 0.15 * self.SPEED_LIMIT)
+        heading = self.assert_receive_message('VFR_HUD').heading
+        self.set_parameters({"SIM_WIND_T": 1, "SIM_WIND_TURB": 0, "SIM_WIND_SPD": wind,
+                             "SIM_WIND_DIR": (heading + 180) % 360})
         self._speed_limit_wait_rtl(w, "tailwind, stick centred", timeout=60)
         self.set_parameters({"SIM_WIND_SPD": 0})
         self.wait_disarmed(timeout=900)
@@ -9762,6 +9746,46 @@ class AutoTestCopter(AutoTest):
         self.set_rc(2, 1000)
         self._speed_limit_wait_rtl(w, "IMU noise over the limit")
         self.set_parameters({"SIM_ACC1_RND": 0, "SIM_ACC2_RND": 0})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitGPSLossSwitchesOff(self):
+        '''Losing GPS switches the limit off within seconds (no RTL on a drifting speed), it comes back with the GPS'''
+        self._speed_limit_setup()
+        self.set_parameters({
+            "FS_EKF_ACTION": 2,        # stay in ALT_HOLD on an EKF failsafe
+            "FS_DR_ENABLE": 0,         # and no dead reckoning failsafe
+        })
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_lost = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_DISABLE": 1, "SIM_GPS2_DISABLE": 1})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=10)
+        off_after = self.get_sim_time_cached() - t_lost
+        self.progress("GPS lost: limit off after %.1fs" % off_after)
+        if off_after > 5:
+            raise NotAchievedException("limit only switched off %.1fs after the GPS went" % off_after)
+
+        # well over the limit with no GPS: nothing knows the real speed, so no RTL
+        w.reset()
+        self.set_rc(2, 1000)
+        self.delay_sim_time(self._speed_limit_spinup())
+        self.progress("no GPS, full stick: true speed max %.2f m/s, EKF said %.2f m/s, limit %.1f" %
+                      (w.max_true, w.max_ekf, limit))
+        if w.max_true < 1.1 * limit:
+            raise NotAchievedException("only got to %.2f m/s without GPS, didn't test anything" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "no GPS")
+
+        # GPS back while still over the limit: on again after GPS_RECOVER, then home
+        t_back = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_DISABLE": 0, "SIM_GPS2_DISABLE": 0})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=30)
+        on_after = self.get_sim_time_cached() - t_back
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=15).text
+        self.wait_mode('RTL', timeout=5)
+        self.set_rc(2, 1500)
+        self.progress("GPS back: limit on after %.1fs, then '%s'" % (on_after, text))
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitPilotOverride(self):
@@ -10051,6 +10075,7 @@ class AutoTestCopter(AutoTest):
             self.SpeedLimitNoTriggerDuringTakeoff,
             self.SpeedLimitRCFailsafeRTL,
             self.SpeedLimitVibration,
+            self.SpeedLimitGPSLossSwitchesOff,
             self.SpeedLimitPilotOverride,
             self.SpeedLimitFenceBreachAltHold,
             self.RTL_braking_distance,

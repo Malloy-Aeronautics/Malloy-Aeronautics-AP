@@ -36,10 +36,36 @@ void AC_SpeedLimit::set_override(bool override_on)
     _triggered = false;
 }
 
+int8_t AC_SpeedLimit::update_gps(bool using_gps, uint32_t now_ms)
+{
+    if (!using_gps) {
+        _gps_back_ms = 0;
+        if (!_gps_lost) {
+            _gps_lost = true;
+            _triggered = false;
+            return -1;
+        }
+        return 0;
+    }
+    if (!_gps_lost) {
+        return 0;
+    }
+    if (_gps_back_ms == 0) {
+        _gps_back_ms = now_ms;
+        return 0;
+    }
+    if (now_ms - _gps_back_ms < GPS_RECOVER_MS) {
+        return 0;
+    }
+    _gps_lost = false;
+    _gps_back_ms = 0;
+    return 1;
+}
+
 bool AC_SpeedLimit::update(bool applies, float ground_speed)
 {
     // a limit of zero or less would send the vehicle home as soon as it moved, treat it as off
-    if (!active() || !applies || !isfinite(ground_speed) || !is_positive(_limit.get()) ||
+    if (!active() || !applies || _gps_lost || !isfinite(ground_speed) || !is_positive(_limit.get()) ||
         ground_speed <= _limit) {
         _triggered = false;
         return false;
