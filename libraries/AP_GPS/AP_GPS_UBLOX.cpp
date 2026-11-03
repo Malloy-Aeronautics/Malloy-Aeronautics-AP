@@ -129,6 +129,8 @@ AP_GPS_UBLOX::~AP_GPS_UBLOX()
 /*
   config for F9 GPS in moving baseline base role
   See ZED-F9P integration manual section 3.1.5.6.1
+  The lists send MSM7 observations. GPS_DRV_OPTIONS bit 6 swaps them
+  for MSM4 when the list is applied, see active_config_value()
  */
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart1[] {
  { ConfigKey::CFG_UART1OUTPROT_RTCM3X, 1},
@@ -142,6 +144,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart1[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, RTK_MB_RTCM_RATE},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2, 0},
@@ -149,6 +155,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart1[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2, 0},
 };
 
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart2[] {
@@ -166,6 +176,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart2[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, RTK_MB_RTCM_RATE},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART1, 0},
@@ -173,6 +187,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart2[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1, 0},
 };
 
 /*
@@ -197,6 +215,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart1[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2, 0},
@@ -204,6 +226,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart1[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2, 0},
 };
 
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
@@ -223,6 +249,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART1, 0},
@@ -230,6 +260,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1, 0},
 };
 
 /*
@@ -256,6 +290,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_ywire[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2, 0},
@@ -263,6 +301,10 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_ywire[] {
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1230_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2, 0},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2, 0},
 };
 #endif // GPS_MOVING_BASELINE
 
@@ -1282,9 +1324,10 @@ AP_GPS_UBLOX::_parse_gps(void)
                 int8_t cfg_idx = find_active_config_index(id);
                 if (cfg_idx >= 0) {
                     const uint8_t key_size = config_key_size(id);
+                    const uint32_t value = active_config_value(cfg_idx);
                     if (cfg_len < key_size ||
-                        memcmp(&active_config.list[cfg_idx].value, cfg_data, key_size) != 0) {
-                        _configure_valset(id, &active_config.list[cfg_idx].value);
+                        memcmp(&value, cfg_data, key_size) != 0) {
+                        _configure_valset(id, &value);
                         _unconfigured_messages |= active_config.unconfig_bit;
                         active_config.done_mask &= ~(1U << cfg_idx);
                         _cfg_needs_save = true;
@@ -1298,7 +1341,7 @@ AP_GPS_UBLOX::_parse_gps(void)
                             memcpy(&got, cfg_data, MIN(key_size, (uint8_t)sizeof(got)));
                             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "u-blox %d: cfg 0x%08x is %u want %u",
                                           state.instance + 1, unsigned(id), unsigned(got),
-                                          unsigned(active_config.list[cfg_idx].value));
+                                          unsigned(value));
                         }
                     } else {
                         active_config.done_mask |= (1U << cfg_idx);
@@ -1890,6 +1933,45 @@ AP_GPS_UBLOX::_configure_valget(ConfigKey key)
     msg.key = key;
     return _send_message(CLASS_CFG, MSG_CFG_VALGET, &msg, sizeof(msg));
 }
+
+#if GPS_MOVING_BASELINE
+/*
+  value to send for an entry of the active config list. A base with
+  MSM4 selected turns the MSM7 observations off and sends the matching
+  MSM4 ones at the same rate on the port its RTCM goes out on
+ */
+uint32_t AP_GPS_UBLOX::active_config_value(uint8_t idx) const
+{
+    const config_list &item = active_config.list[idx];
+    if (role != AP_GPS::GPS_ROLE_MB_BASE || !mb_use_msm4()) {
+        return item.value;
+    }
+    switch (item.key) {
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1127_UART2:
+        return 0;
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART1:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART1:
+        // UART1 for the default and Y-wire setups
+        return mb_use_uart2() ? 0 : RTK_MB_RTCM_RATE;
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1074_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1084_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1094_UART2:
+    case ConfigKey::MSGOUT_RTCM_3X_TYPE1124_UART2:
+        return mb_use_uart2() ? RTK_MB_RTCM_RATE : 0;
+    default:
+        return item.value;
+    }
+}
+#endif // GPS_MOVING_BASELINE
 
 /*
  *  configure F9 based key/value pair for a complete config list

@@ -611,6 +611,8 @@ protected:
         // controller and the rover UART2 RX. Mutually exclusive with
         // UBX_MBUseUart2; if both are set, UART2 interlink wins.
         UBX_MBBaseUart1ToRoverUart2 = (1U << 5),
+        // moving baseline base sends RTCM MSM4 observations instead of MSM7
+        UBX_MBUseMSM4     = (1U << 6),
     };
 
     // check if an option is set
