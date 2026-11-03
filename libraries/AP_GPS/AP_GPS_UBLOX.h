@@ -282,6 +282,15 @@ private:
         MSGOUT_RTCM_3X_TYPE1230_UART2   = 0x20910305,
         MSGOUT_UBX_NAV_RELPOSNED_UART2  = 0x2091008f,
 
+        // MSM4 observations, a smaller alternative to the MSM7 set above
+        MSGOUT_RTCM_3X_TYPE1074_UART1   = 0x2091035f,
+        MSGOUT_RTCM_3X_TYPE1084_UART1   = 0x20910364,
+        MSGOUT_RTCM_3X_TYPE1094_UART1   = 0x20910369,
+        MSGOUT_RTCM_3X_TYPE1124_UART1   = 0x2091036e,
+        MSGOUT_RTCM_3X_TYPE1074_UART2   = 0x20910360,
+        MSGOUT_RTCM_3X_TYPE1084_UART2   = 0x20910365,
+        MSGOUT_RTCM_3X_TYPE1094_UART2   = 0x2091036a,
+        MSGOUT_RTCM_3X_TYPE1124_UART2   = 0x2091036f,
     };
     struct PACKED ubx_cfg_valset {
         uint8_t version;
@@ -785,6 +794,14 @@ private:
     bool mb_rover_fed_directly(void) const {
         return mb_use_uart2() || mb_ywire();
     }
+
+    // GPS_DRV_OPTIONS bit 6: base sends MSM4 observations instead of MSM7
+    bool mb_use_msm4(void) const {
+        return option_set(AP_GPS::DriverOptions::UBX_MBUseMSM4);
+    }
+
+    // value to send for an entry of the active config list
+    uint32_t active_config_value(uint8_t idx) const;
 #endif
 
     // structure for list of config key/value pairs for
