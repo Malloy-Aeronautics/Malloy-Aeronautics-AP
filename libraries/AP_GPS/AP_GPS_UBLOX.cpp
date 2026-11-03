@@ -185,6 +185,9 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart1[] {
  { ConfigKey::CFG_UART2OUTPROT_RTCM3X, 0},
  { ConfigKey::CFG_UART1INPROT_RTCM3X, 1},
  { ConfigKey::CFG_UART2INPROT_RTCM3X, 0},
+ // undo a previous Y-wire config, which saved UART2 UBX/NMEA input off in Flash
+ { ConfigKey::CFG_UART2INPROT_UBX, 1},
+ { ConfigKey::CFG_UART2INPROT_NMEA, 1},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 1},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, 0},
@@ -208,6 +211,8 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Rover_uart2[] {
  { ConfigKey::CFG_UART2_BAUDRATE, 460800},
  { ConfigKey::CFG_UART2OUTPROT_RTCM3X, 0},
  { ConfigKey::CFG_UART2INPROT_RTCM3X, 1},
+ { ConfigKey::CFG_UART2INPROT_UBX, 1},
+ { ConfigKey::CFG_UART2INPROT_NMEA, 1},
  { ConfigKey::CFG_UART1INPROT_RTCM3X, 0},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 1},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
