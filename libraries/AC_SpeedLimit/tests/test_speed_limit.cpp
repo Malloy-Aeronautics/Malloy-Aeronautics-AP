@@ -218,4 +218,104 @@ TEST(SpeedLimitRTL, GPSDropoutDuringRecoveryRestartsTheWait)
     EXPECT_EQ(l.limit.update_gps(true, 4500 + AC_SpeedLimit::GPS_RECOVER_MS), 1);
 }
 
+using Notice = AC_SpeedLimit::Notice;
+
+// notice() over `ms` milliseconds at 10Hz, returns how many of each it sent
+static void notices(AC_SpeedLimit &lim, float speed, uint32_t &t, uint32_t ms, int &warns, int &overs,
+                    bool applies = true, bool returning = false)
+{
+    for (uint32_t end = t + ms; t < end; t += 100) {
+        const Notice n = lim.notice(applies, returning, speed, t);
+        warns += n == Notice::WARN;
+        overs += n == Notice::OVER;
+    }
+}
+
+TEST(SpeedLimitNotice, WarnDefaultsTo90Percent)
+{
+    Limiter l(20.0f);
+    EXPECT_FLOAT_EQ(l.limit.warn_speed(), 18.0f);
+    AP_Param::set_object_value(&l.limit, AC_SpeedLimit::var_info, "WARN", 0);
+    EXPECT_FLOAT_EQ(l.limit.warn_speed(), 0.0f);
+}
+
+TEST(SpeedLimitNotice, NothingWellUnderTheLimit)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(l.limit, 17.0f, t, 10000, w, o);
+    EXPECT_EQ(w, 0);
+    EXPECT_EQ(o, 0);
+}
+
+TEST(SpeedLimitNotice, WarnsStraightAwayThenEveryInterval)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    EXPECT_EQ(l.limit.notice(true, false, 18.5f, t), Notice::WARN);
+    t += 100;
+    notices(l.limit, 18.5f, t, 9000, w, o);         // 9.1 s in the band in all
+    EXPECT_EQ(w, 3);                                // at 3, 6 and 9 s
+    EXPECT_EQ(o, 0);
+}
+
+TEST(SpeedLimitNotice, WarningNeedsToDropUnderTheHysteresis)
+{
+    Limiter l(20.0f);                               // warn at 18, re-arm under 17
+    uint32_t t = 1000;
+    EXPECT_EQ(l.limit.notice(true, false, 18.2f, t), Notice::WARN);
+    EXPECT_EQ(l.limit.notice(true, false, 17.5f, t + 100), Notice::NONE);
+    EXPECT_EQ(l.limit.notice(true, false, 18.2f, t + 200), Notice::NONE);   // not yet re-armed
+    EXPECT_EQ(l.limit.notice(true, false, 16.5f, t + 300), Notice::NONE);
+    EXPECT_EQ(l.limit.notice(true, false, 18.2f, t + 400), Notice::WARN);   // re-armed
+}
+
+TEST(SpeedLimitNotice, OverAlertsEverySecondWhileOver)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(l.limit, 22.0f, t, 5000, w, o);
+    EXPECT_EQ(o, 5);
+    EXPECT_EQ(w, 0);
+}
+
+TEST(SpeedLimitNotice, OverCarriesOnWhileReturning)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(l.limit, 22.0f, t, 3000, w, o, false, true);   // RTL started by the limit
+    EXPECT_EQ(o, 3);
+    w = o = 0;
+    notices(l.limit, 19.0f, t, 5000, w, o, false, true);   // slowed down: quiet, no warnings in RTL
+    EXPECT_EQ(o, 0);
+    EXPECT_EQ(w, 0);
+}
+
+TEST(SpeedLimitNotice, QuietWhenOffOverriddenOrNoGPS)
+{
+    Limiter off(20.0f, 0);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(off.limit, 25.0f, t, 3000, w, o);
+    EXPECT_EQ(w + o, 0);
+
+    Limiter ovr(20.0f);
+    ovr.limit.set_override(true);
+    notices(ovr.limit, 25.0f, t, 3000, w, o);
+    EXPECT_EQ(w + o, 0);
+
+    Limiter gps(20.0f);
+    gps.limit.update_gps(false, t);
+    notices(gps.limit, 25.0f, t, 3000, w, o);
+    EXPECT_EQ(w + o, 0);
+
+    Limiter other_mode(20.0f);
+    notices(other_mode.limit, 25.0f, t, 3000, w, o, false, false);
+    EXPECT_EQ(w + o, 0);
+}
+
 AP_GTEST_MAIN()

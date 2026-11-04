@@ -22,6 +22,15 @@ const AP_Param::GroupInfo AC_SpeedLimit::var_info[] = {
 
     // index 3 was SPD_LIM_TIME in an earlier version, don't reuse it
 
+    // @Param: WARN
+    // @DisplayName: Speed limit warning
+    // @Description: Sends a warning to the ground station when the horizontal ground speed gets within this percentage of SPD_LIM_VAL, in the modes the limit covers. 0 turns the warning off
+    // @Units: %
+    // @Range: 0 99
+    // @Increment: 1
+    // @User: Standard
+    AP_GROUPINFO("WARN", 4, AC_SpeedLimit, _warn_pct, 90),
+
     AP_GROUPEND
 };
 
@@ -75,4 +84,52 @@ bool AC_SpeedLimit::update(bool applies, float ground_speed)
     }
     _triggered = true;
     return true;
+}
+
+float AC_SpeedLimit::warn_speed() const
+{
+    if (_warn_pct <= 0 || _warn_pct >= 100 || !is_positive(_limit.get())) {
+        return 0.0f;
+    }
+    return _limit * _warn_pct * 0.01f;
+}
+
+AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool applies, bool returning, float ground_speed, uint32_t now_ms)
+{
+    if (!active() || _gps_lost || !(applies || returning) || !isfinite(ground_speed) ||
+        !is_positive(_limit.get())) {
+        _over = false;
+        _warned = false;
+        return Notice::NONE;
+    }
+
+    // over the limit: straight away, then every OVER_NOTICE_MS for as long as it stays over
+    if (ground_speed > _limit) {
+        if (!_over || now_ms - _last_over_ms >= OVER_NOTICE_MS) {
+            _over = true;
+            _last_over_ms = now_ms;
+            return Notice::OVER;
+        }
+        return Notice::NONE;
+    }
+    _over = false;
+
+    // getting close, only in the modes the limit covers (not on the way home)
+    const float warn = warn_speed();
+    if (!applies || !is_positive(warn)) {
+        _warned = false;
+        return Notice::NONE;
+    }
+    if (ground_speed >= warn) {
+        if (!_warned || now_ms - _last_warn_ms >= WARN_NOTICE_MS) {
+            _warned = true;
+            _last_warn_ms = now_ms;
+            return Notice::WARN;
+        }
+        return Notice::NONE;
+    }
+    if (ground_speed < warn - WARN_HYSTERESIS * _limit) {
+        _warned = false;
+    }
+    return Notice::NONE;
 }
