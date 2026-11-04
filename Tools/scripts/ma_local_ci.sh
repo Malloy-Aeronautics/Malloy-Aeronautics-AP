@@ -13,7 +13,7 @@ FULL=0
 [ "${1:-}" = "--full" ] && FULL=1
 
 BOARDS="CubeOrange mRoControlZeroOEMH7"     # keep in step with ma_ci.yml
-LINT_BASE="${MA_LINT_BASE:-origin/release/MA-4.3.0.17}"
+LINT_BASE="${MA_LINT_BASE:-origin/release/MA-4.3.0.18}"
 LOG_DIR="${TMPDIR:-/tmp}/ma_local_ci"
 mkdir -p "$LOG_DIR"
 
