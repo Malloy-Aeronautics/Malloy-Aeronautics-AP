@@ -29,7 +29,7 @@ concurrency:
 
 env:
   # on a PR compare with the branch it targets, otherwise with the current release branch
-  LINT_BASE: origin/${{ github.base_ref || 'release/MA-4.3.0.17' }}
+  LINT_BASE: origin/${{ github.base_ref || 'release/MA-4.3.0.18' }}
   ACTIONLINT_VERSION: '1.7.7'
 
 jobs:
