@@ -131,6 +131,7 @@ AP_GPS_UBLOX::~AP_GPS_UBLOX()
   See ZED-F9P integration manual section 3.1.5.6.1
   The lists send MSM7 observations. GPS_DRV_OPTIONS bit 6 swaps them
   for MSM4 when the list is applied, see active_config_value()
+  4072.1 is kept off: it is output only from HPG 1.32, a rover does not use it
  */
 const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart1[] {
  { ConfigKey::CFG_UART1OUTPROT_RTCM3X, 1},
@@ -138,7 +139,7 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart1[] {
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 0},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART1, RTK_MB_RTCM_RATE},
- { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART1, RTK_MB_RTCM_RATE},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART1, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART1, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART1, RTK_MB_RTCM_RATE},
@@ -170,7 +171,7 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_MB_Base_uart2[] {
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART2, 0},
  { ConfigKey::MSGOUT_UBX_NAV_RELPOSNED_UART1, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_0_UART2, RTK_MB_RTCM_RATE},
- { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, RTK_MB_RTCM_RATE},
+ { ConfigKey::MSGOUT_RTCM_3X_TYPE4072_1_UART2, 0},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1077_UART2, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1087_UART2, RTK_MB_RTCM_RATE},
  { ConfigKey::MSGOUT_RTCM_3X_TYPE1097_UART2, RTK_MB_RTCM_RATE},
@@ -1246,7 +1247,8 @@ AP_GPS_UBLOX::_parse_gps(void)
            _ublox_port = _buffer.prt.portID;
            return false;
         case MSG_CFG_RATE:
-            if(_buffer.nav_rate.measure_rate_ms != gps._rate_ms[state.instance] ||
+            // compare with the capped rate that _configure_rate() sends
+            if(_buffer.nav_rate.measure_rate_ms != gps.get_rate_ms(state.instance) ||
                _buffer.nav_rate.nav_rate != 1 ||
                _buffer.nav_rate.timeref != 0) {
                _configure_rate();
@@ -1768,7 +1770,10 @@ AP_GPS_UBLOX::_parse_gps(void)
         // when we are a rover we want to ensure we have both the new
         // PVT and the new RELPOSNED message so that we give a
         // consistent view
-        if (AP_HAL::millis() - _last_relposned_ms > 400) {
+        // allow one missed RELPOSNED at the configured rate, and never
+        // less than the 400ms used at 5Hz
+        const uint32_t relposned_timeout_ms = MAX(400U, 2U * gps.get_rate_ms(state.instance));
+        if (AP_HAL::millis() - _last_relposned_ms > relposned_timeout_ms) {
             // we have stopped receiving valid RELPOSNED messages, disable yaw reporting
             state.have_gps_yaw = false;
         } else if (_last_relposned_itow != _last_pvt_itow) {
