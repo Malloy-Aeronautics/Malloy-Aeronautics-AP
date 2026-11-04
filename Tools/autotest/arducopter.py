@@ -9865,19 +9865,30 @@ class AutoTestCopter(AutoTest):
         '''How hard RTL brakes when the limit sends it home (reported, kept inside the lean limit), and the alert repeats while still over the limit'''
         self._speed_limit_setup()
         self._speed_limit_enable()
-        w = self._speed_limit_watch()
+        self._speed_limit_watch()   # STATUSTEXT collection from the start
         samples = []
 
         def record(mav, m):
             if m.get_type() == 'SIM_STATE':
                 samples.append((self.get_sim_time_cached(), m.vn, m.ve, m.roll, m.pitch))
         self.install_message_hook_context(record)
-        self._speed_limit_fly_forward()
-        self._speed_limit_wait_rtl(w, "ALT_HOLD")
+        # well away from home first (LOITER isn't checked), so RTL still has a long way to go when
+        # the limit is lowered under its speed further down
+        self.takeoff(20, mode='LOITER')
+        self.set_rc(2, 1000)
+        self.wait_distance_to_home(80, 1000, timeout=120)
+        # already over the limit in LOITER, so ALT_HOLD sends it home straight away. Not change_mode():
+        # it can be in RTL before change_mode() sees ALT_HOLD. The message marks the moment of the switch
+        self.context_clear_collection('STATUSTEXT')
+        self.mav.set_mode(self.get_mode_from_mode_mapping('ALT_HOLD'))
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=30).text
+        t_rtl = self.get_sim_time_cached()
+        self.wait_mode('RTL', timeout=5)
+        self.progress("sent home: '%s'" % text)
         self.set_rc(2, 1500)
         self.delay_sim_time(8)
         # along-track acceleration from the true velocity over 0.25 s steps, from 1 s before the RTL
-        win = [x for x in samples if x[0] >= w.rtl_t - 1.0]
+        win = [x for x in samples if x[0] >= t_rtl - 1.0]
         acc = []
         for a, b in zip(win, win[5:]):
             dt = b[0] - a[0]
@@ -9889,13 +9900,13 @@ class AutoTestCopter(AutoTest):
             acc.append((a[0], along, tilt))
         if len(acc) < 20:
             raise NotAchievedException("only %u SIM_STATE samples around the RTL" % len(acc))
-        before = max(x[1] for x in acc if x[0] < w.rtl_t)
-        braking = -min(x[1] for x in acc if x[0] >= w.rtl_t)
-        tilt_rate = max(x[2] for x in acc if x[0] >= w.rtl_t)
+        before = max(x[1] for x in acc if x[0] < t_rtl)
+        braking = -min(x[1] for x in acc if x[0] >= t_rtl)
+        tilt_rate = max(x[2] for x in acc if x[0] >= t_rtl)
         jerk = max(abs(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(acc, acc[1:]) if b[0] > a[0])
         wp_accel = self.get_parameter("WPNAV_ACCEL") * 0.01
         angle_max = self.get_parameter("ANGLE_MAX") * 0.01
-        tilt_max = max(math.degrees(math.hypot(x[3], x[4])) for x in win if x[0] >= w.rtl_t)
+        tilt_max = max(math.degrees(math.hypot(x[3], x[4])) for x in win if x[0] >= t_rtl)
         self.progress("RTL takeover: accelerating at %.2f m/s/s before, braking at most %.2f m/s/s after "
                       "(WPNAV_ACCEL %.2f), max jerk %.1f m/s/s/s, max tilt %.0f deg (ANGLE_MAX %.0f), "
                       "max tilt rate %.0f deg/s" % (before, braking, wp_accel, jerk, tilt_max, angle_max, tilt_rate))
