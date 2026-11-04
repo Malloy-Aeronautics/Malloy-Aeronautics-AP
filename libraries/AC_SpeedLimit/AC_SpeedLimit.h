@@ -10,18 +10,26 @@
   SPD_LIM_VAL, update() returns true on that one call and the vehicle switches to RTL. Nothing
   else is changed: the attitude and the navigation speeds are left alone.
 
+  notice() says what to tell the pilot on each update: a warning when the speed gets within
+  SPD_LIM_WARN percent of the limit, and an alert for as long as it stays over the limit.
+
   The pilot can turn it off with an RC switch (override); a radio failsafe turns it back on.
 
   Without GPS the ground speed can't be trusted (the EKF carries on with a velocity that drifts),
   so the limit is switched off as soon as the GPS isn't usable: the EKF has stopped using it, or no
-  GPS that is still sending sees GPS_MIN_SATS satellites. It comes back on once the GPS has been
-  usable again for GPS_RECOVER_MS.
+  GPS that is still sending has a 3D fix with GPS_MIN_SATS satellites and, where it reports one, a
+  horizontal accuracy of GPS_MAX_HACC or better. It comes back on once the GPS has been usable
+  again for GPS_RECOVER_MS.
 */
 class AC_SpeedLimit {
 public:
-    static constexpr uint8_t GPS_MIN_SATS = 6;          // fewer on every GPS: limit off
+    static constexpr uint8_t GPS_MIN_SATS = 4;          // the minimum for a 3D fix
+    static constexpr float GPS_MAX_HACC = 5.0f;         // m, the EKF's own GPS accuracy check
     static constexpr uint32_t GPS_TIMEOUT_MS = 1000;    // a GPS silent this long doesn't count
     static constexpr uint32_t GPS_RECOVER_MS = 3000;    // GPS usable again this long: limit on again
+    static constexpr uint32_t OVER_NOTICE_MS = 1000;    // over the limit: alert this often
+    static constexpr uint32_t WARN_NOTICE_MS = 3000;    // close to the limit: warn this often
+    static constexpr float WARN_HYSTERESIS = 0.05f;     // of the limit, before a new warning
 
     AC_SpeedLimit();
 
@@ -29,6 +37,16 @@ public:
 
     // returns true on the call where the vehicle should start an RTL
     bool update(bool applies, float ground_speed);
+
+    enum class Notice : uint8_t {
+        NONE = 0,
+        WARN = 1,   // within SPD_LIM_WARN percent of the limit
+        OVER = 2,   // over the limit
+    };
+
+    // what to tell the pilot this update. `applies` as for update(); `returning` while the
+    // vehicle is in the RTL the limit started, so the alerts carry on until it has slowed down
+    Notice notice(bool applies, bool returning, float ground_speed, uint32_t now_ms);
 
     // SPD_LIM_EN is set (whether or not the pilot has overridden it)
     bool enabled() const { return _enabled != 0; }
@@ -40,6 +58,9 @@ public:
     bool get_override() const { return _override; }
 
     float limit() const { return _limit; }          // m/s
+
+    // speed at which the warning starts, 0 when SPD_LIM_WARN is off
+    float warn_speed() const;
 
     // tell it whether the GPS is usable. Returns +1 when that turns the limit back on, -1 when
     // it turns it off, 0 otherwise
@@ -53,6 +74,7 @@ public:
 private:
     AP_Int8 _enabled;
     AP_Float _limit;
+    AP_Int8 _warn_pct;
 
     // set once it has asked for an RTL, until the speed is back under the limit or the limit
     // stops applying (the vehicle is in RTL by then), so one overspeed sends it home once.
@@ -61,4 +83,10 @@ private:
     bool _override = false;
     bool _gps_lost = false;
     uint32_t _gps_back_ms = 0;      // when the GPS became usable again, 0 = not yet
+
+    // notice() state
+    bool _over = false;
+    bool _warned = false;
+    uint32_t _last_over_ms = 0;
+    uint32_t _last_warn_ms = 0;
 };

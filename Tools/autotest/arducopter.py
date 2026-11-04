@@ -9338,10 +9338,9 @@ class AutoTestCopter(AutoTest):
             self.set_parameters({"RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
 
     def _speed_limit_enable(self, limit=None):
-        self.set_parameters({
-            "SPD_LIM_EN": 1,
-            "SPD_LIM_VAL": limit if limit is not None else self.SPEED_LIMIT,
-        })
+        # the value first: enabling it while the old, lower value is still set can send it home
+        self.set_parameter("SPD_LIM_VAL", limit if limit is not None else self.SPEED_LIMIT)
+        self.set_parameter("SPD_LIM_EN", 1)
 
     def _speed_limit_nav_cms(self):
         '''cm/s, comfortably above the limit'''
@@ -9813,21 +9812,106 @@ class AutoTestCopter(AutoTest):
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitLowSatsSwitchesOff(self):
-        '''A GPS that keeps its fix but drops under 6 satellites isn't trusted: the limit goes off until they're back'''
+        '''A GPS that keeps its fix but drops under 4 satellites isn't trusted: the limit goes off until they're back'''
         self._speed_limit_setup()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
         self._speed_limit_cruise(w)
         self.context_clear_collection('STATUSTEXT')
         t_low = self.get_sim_time_cached()
-        self.set_parameters({"SIM_GPS_NUMSATS": 5, "SIM_GPS2_NUMSATS": 5})
+        self.set_parameters({"SIM_GPS_NUMSATS": 3, "SIM_GPS2_NUMSATS": 3})
         self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
-        self.progress("5 satellites: limit off after %.1fs" % (self.get_sim_time_cached() - t_low))
+        self.progress("3 satellites: limit off after %.1fs" % (self.get_sim_time_cached() - t_low))
         self.set_parameters({"SIM_GPS_NUMSATS": 10, "SIM_GPS2_NUMSATS": 10})
         self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
         self.progress("10 satellites: limit on again")
         self.set_rc(2, 1500)
         self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitPoorAccuracySwitchesOff(self):
+        '''A GPS whose horizontal accuracy is worse than 5 m isn't trusted: the limit goes off until it improves'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_bad = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_ACC": 6, "SIM_GPS2_ACC": 6})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.progress("6 m accuracy: limit off after %.1fs" % (self.get_sim_time_cached() - t_bad))
+        self.set_parameters({"SIM_GPS_ACC": 0.3, "SIM_GPS2_ACC": 0.3})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
+        self.progress("0.3 m accuracy: limit on again")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitWarnsBeforeLimit(self):
+        '''Within SPD_LIM_WARN percent of the limit the pilot gets a warning, with no RTL'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w, margin=0.94)
+        text = self.wait_statustext("Speed warning:", check_context=True, timeout=10).text
+        self.progress("at %.2f m/s, limit %.1f: '%s'" % (v, limit, text))
+        self.delay_sim_time(5)
+        self._speed_limit_assert_no_trigger(w, "close to the limit")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitRTLTakeover(self):
+        '''How hard RTL brakes when the limit sends it home (reported, kept inside the lean limit), and the alert repeats while still over the limit'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        samples = []
+
+        def record(mav, m):
+            if m.get_type() == 'SIM_STATE':
+                samples.append((self.get_sim_time_cached(), m.vn, m.ve, m.roll, m.pitch))
+        self.install_message_hook_context(record)
+        self._speed_limit_fly_forward()
+        self._speed_limit_wait_rtl(w, "ALT_HOLD")
+        self.set_rc(2, 1500)
+        self.delay_sim_time(8)
+        # along-track acceleration from the true velocity over 0.25 s steps, from 1 s before the RTL
+        win = [x for x in samples if x[0] >= w.rtl_t - 1.0]
+        acc = []
+        for a, b in zip(win, win[5:]):
+            dt = b[0] - a[0]
+            v = math.hypot(a[1], a[2])
+            if dt <= 0 or v < 0.5:
+                continue
+            along = ((b[1] - a[1]) * a[1] + (b[2] - a[2]) * a[2]) / (v * dt)
+            tilt = math.degrees(math.hypot(b[3] - a[3], b[4] - a[4])) / dt
+            acc.append((a[0], along, tilt))
+        if len(acc) < 20:
+            raise NotAchievedException("only %u SIM_STATE samples around the RTL" % len(acc))
+        before = max(x[1] for x in acc if x[0] < w.rtl_t)
+        braking = -min(x[1] for x in acc if x[0] >= w.rtl_t)
+        tilt_rate = max(x[2] for x in acc if x[0] >= w.rtl_t)
+        jerk = max(abs(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(acc, acc[1:]) if b[0] > a[0])
+        wp_accel = self.get_parameter("WPNAV_ACCEL") * 0.01
+        angle_max = self.get_parameter("ANGLE_MAX") * 0.01
+        tilt_max = max(math.degrees(math.hypot(x[3], x[4])) for x in win if x[0] >= w.rtl_t)
+        self.progress("RTL takeover: accelerating at %.2f m/s/s before, braking at most %.2f m/s/s after "
+                      "(WPNAV_ACCEL %.2f), max jerk %.1f m/s/s/s, max tilt %.0f deg (ANGLE_MAX %.0f), "
+                      "max tilt rate %.0f deg/s" % (before, braking, wp_accel, jerk, tilt_max, angle_max, tilt_rate))
+        # RTL's entry is stock ArduPilot (the same as switching to RTL by hand): its braking is reported
+        # here, and only held to the airframe's lean limit
+        if tilt_max > angle_max + 5:
+            raise NotAchievedException("RTL leaned %.0f deg, over ANGLE_MAX %.0f" % (tilt_max, angle_max))
+        # lower the limit under RTL's own speed: the alert has to keep coming while it is over
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameters({"SPD_LIM_VAL": 1})
+        self.delay_sim_time(4.5)
+        alerts = [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("Speed over limit:")]
+        self.progress("RTL over a 1 m/s limit: %u alerts in 4.5 s, first '%s'" % (len(alerts), alerts[0] if alerts else ''))
+        if len(alerts) < 3:
+            raise NotAchievedException("only %u over-the-limit alerts in 4.5 s on the way home" % len(alerts))
+        self.set_parameters({"SPD_LIM_VAL": self.SPEED_LIMIT})
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitPilotOverride(self):
@@ -10120,6 +10204,9 @@ class AutoTestCopter(AutoTest):
             self.SpeedLimitGPSLossSwitchesOff,
             self.SpeedLimitOneGPSLostStaysOn,
             self.SpeedLimitLowSatsSwitchesOff,
+            self.SpeedLimitPoorAccuracySwitchesOff,
+            self.SpeedLimitWarnsBeforeLimit,
+            self.SpeedLimitRTLTakeover,
             self.SpeedLimitPilotOverride,
             self.SpeedLimitFenceBreachAltHold,
             self.RTL_braking_distance,
