@@ -32,6 +32,9 @@
 #ifndef GPS_MAX_RECEIVERS
 #define GPS_MAX_RECEIVERS 2 // maximum number of physical GPS sensors allowed - does not include virtual GPS created by blending receiver data
 #endif
+#ifndef GPS_MAX_RATE_MS
+#define GPS_MAX_RATE_MS 250 // maximum value of rate_ms (i.e. slowest update rate) is 4hz or 250ms
+#endif
 #if !defined(GPS_MAX_INSTANCES)
 #if GPS_MAX_RECEIVERS > 1
 #define GPS_MAX_INSTANCES  (GPS_MAX_RECEIVERS + 1) // maximum number of GPS instances including the 'virtual' GPS created by blending receiver data

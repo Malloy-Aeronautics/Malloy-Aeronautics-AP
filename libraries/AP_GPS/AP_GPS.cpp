@@ -51,9 +51,6 @@
 #include <AP_Logger/AP_Logger.h>
 
 #define GPS_RTK_INJECT_TO_ALL 127
-#ifndef GPS_MAX_RATE_MS
-#define GPS_MAX_RATE_MS 200 // maximum value of rate_ms (i.e. slowest update rate) is 5hz or 200ms
-#endif
 #define GPS_BAUD_TIME_MS 1200
 #define GPS_TIMEOUT_MS 4000u
 
@@ -201,20 +198,20 @@ const AP_Param::GroupInfo AP_GPS::var_info[] = {
 
     // @Param: _RATE_MS
     // @DisplayName: GPS update rate in milliseconds
-    // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
+    // @Description: Controls how often the GPS should provide a position update. Lowering below 4Hz is not allowed. Raising the rate above 5Hz(default) usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
     // @Units: ms
-    // @Values: 100:10Hz,125:8Hz,200:5Hz
-    // @Range: 50 200
+    // @Values: 100:10Hz,125:8Hz,200:5Hz,250:4Hz
+    // @Range: 50 250
     // @User: Advanced
     AP_GROUPINFO("_RATE_MS", 14, AP_GPS, _rate_ms[0], 200),
 
 #if GPS_MAX_RECEIVERS > 1
     // @Param: _RATE_MS2
     // @DisplayName: GPS 2 update rate in milliseconds
-    // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
+    // @Description: Controls how often the GPS should provide a position update. Lowering below 4Hz is not allowed. Raising the rate above 5Hz(default) usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
     // @Units: ms
-    // @Values: 100:10Hz,125:8Hz,200:5Hz
-    // @Range: 50 200
+    // @Values: 100:10Hz,125:8Hz,200:5Hz,250:4Hz
+    // @Range: 50 250
     // @User: Advanced
     AP_GROUPINFO("_RATE_MS2", 15, AP_GPS, _rate_ms[1], 200),
 #endif
@@ -970,7 +967,7 @@ void AP_GPS::update_instance(uint8_t instance)
 
     if (data_should_be_logged) {
         // keep count of delayed frames and average frame delay for health reporting
-        const uint16_t gps_max_delta_ms = 245; // 200 ms (5Hz) + 45 ms buffer
+        const uint16_t gps_max_delta_ms = MAX(get_rate_ms(instance), 200U) + 45; // update interval (min 5Hz) + 45 ms buffer
         GPS_timing &t = timing[instance];
 
         if (t.delta_time_ms > gps_max_delta_ms) {
@@ -2057,12 +2054,13 @@ bool AP_GPS::is_healthy(uint8_t instance) const
 
     /*
       allow two lost frames before declaring the GPS unhealthy, but
-      require the average frame rate to be close to 5Hz. We allow for
-      a bit higher average for a rover due to the packet loss that
-      happens with the RTCMv3 data
+      require the average frame rate to be close to the configured
+      rate. We allow for a bit higher average for a rover due to the
+      packet loss that happens with the RTCMv3 data
      */
     const uint8_t delay_threshold = 2;
-    const float delay_avg_max = ((_type[instance] == GPS_TYPE_UBLOX_RTK_ROVER) || (_type[instance] == GPS_TYPE_UAVCAN_RTK_ROVER))?245:215;
+    const float delay_avg_max = MAX(get_rate_ms(instance), 200U) +
+        (((_type[instance] == GPS_TYPE_UBLOX_RTK_ROVER) || (_type[instance] == GPS_TYPE_UAVCAN_RTK_ROVER))?45:15);
     const GPS_timing &t = timing[instance];
     bool delay_ok = (t.delayed_count < delay_threshold) &&
         t.average_delta_ms < delay_avg_max &&
