@@ -282,6 +282,15 @@ private:
         MSGOUT_RTCM_3X_TYPE1230_UART2   = 0x20910305,
         MSGOUT_UBX_NAV_RELPOSNED_UART2  = 0x2091008f,
 
+        // MSM4 observations, a smaller alternative to the MSM7 set above
+        MSGOUT_RTCM_3X_TYPE1074_UART1   = 0x2091035f,
+        MSGOUT_RTCM_3X_TYPE1084_UART1   = 0x20910364,
+        MSGOUT_RTCM_3X_TYPE1094_UART1   = 0x20910369,
+        MSGOUT_RTCM_3X_TYPE1124_UART1   = 0x2091036e,
+        MSGOUT_RTCM_3X_TYPE1074_UART2   = 0x20910360,
+        MSGOUT_RTCM_3X_TYPE1084_UART2   = 0x20910365,
+        MSGOUT_RTCM_3X_TYPE1094_UART2   = 0x2091036a,
+        MSGOUT_RTCM_3X_TYPE1124_UART2   = 0x2091036f,
     };
     struct PACKED ubx_cfg_valset {
         uint8_t version;
@@ -522,6 +531,10 @@ private:
         uint8_t clsID;
         uint8_t msgID;
     };
+    struct PACKED ubx_ack_nack {
+        uint8_t clsID;
+        uint8_t msgID;
+    };
 
 
     struct PACKED ubx_cfg_cfg {
@@ -575,6 +588,7 @@ private:
         ubx_rxm_rawx rxm_rawx;
 #endif
         ubx_ack_ack ack;
+        ubx_ack_nack nack;
         ubx_tim_tm2 tim_tm2;
     } _buffer;
 
@@ -768,6 +782,26 @@ private:
     bool mb_use_uart2(void) const {
         return option_set(AP_GPS::DriverOptions::UBX_MBUseUart2)?true:false;
     }
+
+    // GPS_DRV_OPTIONS bit 5: base UART1 TX Y-wired to rover UART2 RX.
+    // Bit 0 (dedicated UART2 interlink) takes precedence when both are set.
+    bool mb_ywire(void) const {
+        return !mb_use_uart2() && option_set(AP_GPS::DriverOptions::UBX_MBBaseUart1ToRoverUart2);
+    }
+
+    // true if the rover receives RTCM3 directly from the base (Y-wire or
+    // UART2 interlink) rather than via the flight controller
+    bool mb_rover_fed_directly(void) const {
+        return mb_use_uart2() || mb_ywire();
+    }
+
+    // GPS_DRV_OPTIONS bit 6: base sends MSM4 observations instead of MSM7
+    bool mb_use_msm4(void) const {
+        return option_set(AP_GPS::DriverOptions::UBX_MBUseMSM4);
+    }
+
+    // value to send for an entry of the active config list
+    uint32_t active_config_value(uint8_t idx) const;
 #endif
 
     // structure for list of config key/value pairs for
@@ -805,6 +839,8 @@ private:
     // config for moving baseline rover
     static const config_list config_MB_Rover_uart1[];
     static const config_list config_MB_Rover_uart2[];
+    // [MA] rover config when base UART1 is Y-wired to rover UART2
+    static const config_list config_MB_Rover_ywire[];
 
     // status of active configuration for a role
     struct {
@@ -812,7 +848,17 @@ private:
         uint8_t count;
         uint32_t done_mask;
         uint32_t unconfig_bit;
+        // index of the key currently being fetched when fetching one
+        // key at a time, -1 when fetching all keys in one VALGET
+        int8_t fetch_index = -1;
     } active_config;
+
+    // set when the receiver NAKs a multi-key VALGET and we must fetch
+    // config keys one at a time
+    bool use_single_valget = false;
+
+    // rate limit for the moving-baseline config mismatch report
+    uint32_t _last_mb_cfg_report_ms = 0;
 
     // RTCM3 parser for when in moving baseline base mode
     RTCM3_Parser *rtcm3_parser;
