@@ -9830,16 +9830,16 @@ class AutoTestCopter(AutoTest):
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitPoorAccuracySwitchesOff(self):
-        '''A GPS whose horizontal accuracy is worse than 5 m isn't trusted: the limit goes off until it improves'''
+        '''A GPS whose horizontal accuracy is worse than 10 m isn't trusted: the limit goes off until it improves'''
         self._speed_limit_setup()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
         self._speed_limit_cruise(w)
         self.context_clear_collection('STATUSTEXT')
         t_bad = self.get_sim_time_cached()
-        self.set_parameters({"SIM_GPS_ACC": 6, "SIM_GPS2_ACC": 6})
+        self.set_parameters({"SIM_GPS_ACC": 12, "SIM_GPS2_ACC": 12})
         self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
-        self.progress("6 m accuracy: limit off after %.1fs" % (self.get_sim_time_cached() - t_bad))
+        self.progress("12 m accuracy: limit off after %.1fs" % (self.get_sim_time_cached() - t_bad))
         self.set_parameters({"SIM_GPS_ACC": 0.3, "SIM_GPS2_ACC": 0.3})
         self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
         self.progress("0.3 m accuracy: limit on again")

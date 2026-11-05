@@ -901,6 +901,7 @@ private:
     void update_optical_flow(void);
 
     // speed_limit.cpp
+    AP_GPSCheck speed_limit_gps {AC_SpeedLimit::gps_criteria()};
     void speed_limit_check();
 
     // takeoff_check.cpp

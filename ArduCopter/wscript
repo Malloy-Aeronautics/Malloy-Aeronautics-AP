@@ -12,6 +12,7 @@ def build(bld):
             'AC_PrecLand',
             'AC_Sprayer',
             'AC_SpeedLimit',
+            'AP_GPSCheck',
             'AC_Autorotation',
             'AC_WPNav',
             'AP_Camera',
