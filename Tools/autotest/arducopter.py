@@ -9295,6 +9295,713 @@ class AutoTestCopter(AutoTest):
         self.clear_fence()
         self.disarm_vehicle(force=True)
 
+    # ------------------------------------------------------------------------------------------
+    # Speed limit (SPD_LIM_*): over the limit in STABILIZE or ALT_HOLD switches to RTL straight
+    # away, the other modes aren't checked. Set MA_SPEED_LIMIT and MA_SPEED_LIMIT_FRAME to fly
+    # these at another limit or airframe.
+    # ------------------------------------------------------------------------------------------
+    SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT", "5"))
+    SPEED_MAX = 1.03           # "over the limit" for the modes that aren't checked
+    # the check runs at 10Hz and the test sees the mode change in the next heartbeat
+    SPEED_LIMIT_LATENCY = 1.0  # s
+    # SITL frame and model/param file name in models/
+    SPEED_LIMIT_FRAMES = {
+        "T150": ("octa-quad", "T150_sim"),
+    }
+
+    def _speed_limit_frame(self):
+        '''fly on MA_SPEED_LIMIT_FRAME, with its fence off (the fence test sets its own)'''
+        name = os.environ.get("MA_SPEED_LIMIT_FRAME", "")
+        if not name:
+            return
+        if name not in self.SPEED_LIMIT_FRAMES:
+            raise NotAchievedException("unknown MA_SPEED_LIMIT_FRAME %s" % name)
+        frame, model = self.SPEED_LIMIT_FRAMES[name]
+        defaults = [util.reltopdir(os.path.join(testdir, "default_params", "copter.parm")),
+                    util.reltopdir(os.path.join(testdir, "models", model + ".param"))]
+        self.customise_SITL_commandline(
+            ["--defaults", ",".join(defaults)],
+            model="%s:@ROMFS/models/%s.json" % (frame, model),
+            wipe=True,
+        )
+        self.set_parameters({"FENCE_ENABLE": 0, "AVOID_ENABLE": 0})
+
+    def _speed_limit_setup(self):
+        '''airframe, and the limit off to start with. RTL isn't judged, it's given a nav speed that gets
+        it home in reasonable time from wherever the higher limits leave it'''
+        frame = os.environ.get("MA_SPEED_LIMIT_FRAME", "") or "the stock quad"
+        self.progress("speed limit %.1f m/s on %s" % (self.SPEED_LIMIT, frame))
+        self._speed_limit_frame()
+        self.set_parameters({"SPD_LIM_EN": 0, "SPD_LIM_VAL": self.SPEED_LIMIT})
+        # anything other than the stock quad at 5 m/s needs a faster RTL to get home in good time
+        if self.SPEED_LIMIT != 5 or os.environ.get("MA_SPEED_LIMIT_FRAME", ""):
+            self.set_parameters({"RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
+
+    def _speed_limit_enable(self, limit=None):
+        # the value first: enabling it while the old, lower value is still set can send it home
+        self.set_parameter("SPD_LIM_VAL", limit if limit is not None else self.SPEED_LIMIT)
+        self.set_parameter("SPD_LIM_EN", 1)
+
+    def _speed_limit_nav_cms(self):
+        '''cm/s, comfortably above the limit'''
+        return max(1500, int(150 * self.SPEED_LIMIT))
+
+    def _speed_limit_well_over(self):
+        '''clearly over the limit, without asking more than the airframe's top speed'''
+        return min(self.SPEED_LIMIT * 1.5, self.SPEED_LIMIT + 5)
+
+    def _speed_limit_spinup(self):
+        '''seconds of full stick to get up to speed'''
+        return 15 + max(0, self.SPEED_LIMIT - 5)
+
+    def _speed_limit_loiter_fast(self):
+        '''LOITER faster than the limit. The T150's 20 deg LOIT_ANG_MAX can't reach 25 m/s, so above
+        20 m/s it gets the full ANGLE_MAX'''
+        self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms()})
+        if self.SPEED_LIMIT > 20:
+            self.set_parameters({"LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
+
+    def _speed_limit_watch(self, limit=None):
+        '''track true speed, EKF speed and the switch to RTL for the rest of the test. reset() starts a
+        new window; w.limit is the limit the EKF speed is compared with'''
+        rtl_mode = self.get_mode_from_mode_mapping('RTL')
+        test = self
+
+        class Watch(object):
+            def reset(w):
+                w.last_true = getattr(w, 'last_true', 0.0)
+                w.max_true = 0.0
+                w.min_true = 1000.0
+                w.max_ekf = 0.0
+                w.saw_rtl = False
+                w.rtl_t = None
+                w.first_over_t = None
+
+            def hook(w, mav, m):
+                t = m.get_type()
+                if t == 'SIM_STATE':
+                    v = math.hypot(m.vn, m.ve)
+                    w.last_true = v
+                    w.max_true = max(w.max_true, v)
+                    w.min_true = min(w.min_true, v)
+                elif t == 'VFR_HUD':
+                    w.max_ekf = max(w.max_ekf, m.groundspeed)
+                    if m.groundspeed > w.limit:
+                        if w.first_over_t is None:
+                            w.first_over_t = test.get_sim_time_cached()
+                    elif w.rtl_t is None:
+                        w.first_over_t = None
+                elif t == 'HEARTBEAT' and m.type != mavutil.mavlink.MAV_TYPE_GCS:
+                    if m.custom_mode == rtl_mode and not w.saw_rtl:
+                        w.saw_rtl = True
+                        w.rtl_t = test.get_sim_time_cached()
+
+        w = Watch()
+        w.limit = limit if limit is not None else self.SPEED_LIMIT
+        w.reset()
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_SIM_STATE, 20)
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 10)
+        self.install_message_hook_context(w.hook)
+        # from the start, so a "Speed limit:" message straight after a parameter change isn't missed
+        self.context_collect('STATUSTEXT')
+        return w
+
+    def _speed_window(self, w, seconds):
+        # a reboot resets message rates
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_SIM_STATE, 20)
+        w.reset()
+        self.delay_sim_time(seconds)
+        if w.min_true > w.max_true:
+            raise NotAchievedException("no SIM_STATE received, can't check the true speed")
+
+    def _speed_limit_fly_forward(self, mode='ALT_HOLD', alt=20, settle=0):
+        '''take off and hold full forward stick'''
+        self.takeoff(alt, mode=mode)
+        self.set_rc(2, 1000)
+        if settle:
+            self.delay_sim_time(settle)
+
+    def _speed_limit_wait_rtl(self, w, what, timeout=None, over_since=None):
+        '''wait for the speed limit to switch to RTL, check it came straight after the EKF speed went
+        over the limit and that the vehicle said why. over_since: sim time it was already over the
+        limit from (the limit turned on or lowered). Returns the delay.'''
+        timeout = timeout if timeout is not None else 30 + self._speed_limit_spinup()
+        tstart = self.get_sim_time()
+        while w.rtl_t is None:
+            if self.get_sim_time_cached() - tstart > timeout:
+                raise NotAchievedException("%s: no speed limit RTL within %.0fs (EKF max %.2f m/s, limit %.1f)" %
+                                           (what, timeout, w.max_ekf, w.limit))
+            self.delay_sim_time(0.1)
+        self.set_rc(2, 1500)
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=5).text
+        try:
+            body = text.split("Speed limit:", 1)[1]                # " 5.07 m/s over 5.00, RTL"
+            seen = float(body.split("m/s")[0])
+            used = float(body.split("over")[1].split(",")[0])
+        except (IndexError, ValueError):
+            raise NotAchievedException("%s: unexpected speed limit message '%s'" % (what, text))
+        if seen < w.limit - 0.01 or abs(used - w.limit) > 0.05:
+            raise NotAchievedException("%s: '%s', expected over %.1f" % (what, text, w.limit))
+        over = over_since if over_since is not None else w.first_over_t
+        delay = w.rtl_t - over if over is not None else 0.0
+        self.progress("%s: RTL %.2fs after going over %.1f m/s, true speed peaked at %.2f m/s, '%s'" %
+                      (what, delay, w.limit, w.max_true, text))
+        if delay > self.SPEED_LIMIT_LATENCY:
+            raise NotAchievedException("%s: RTL %.2fs after going over the limit, should be straight away" %
+                                       (what, delay))
+        return delay
+
+    def _speed_limit_assert_no_trigger(self, w, what, no_rtl=True):
+        msgs = [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("Speed limit:")]
+        if msgs:
+            raise NotAchievedException("%s: the speed limit triggered (%s)" % (what, msgs[0]))
+        if no_rtl and (w.saw_rtl or self.mode_is('RTL')):
+            raise NotAchievedException("%s: switched to RTL" % what)
+
+    def _speed_limit_cruise(self, w, stick=1350, margin=0.8):
+        '''ALT_HOLD on a part stick with the limit off until the speed settles, then the limit turned on
+        a little above that speed (the speed is `margin` of it). Returns (speed, limit)'''
+        self.set_parameters({"SPD_LIM_EN": 0})
+        self.set_rc(2, stick)
+        self.delay_sim_time(self._speed_limit_spinup())
+        speeds = []
+        tstart = self.get_sim_time_cached()
+        while self.get_sim_time_cached() - tstart < 5:
+            speeds.append(self.assert_receive_message('VFR_HUD', timeout=2).groundspeed)
+        v = max(speeds)
+        if v < 2:
+            raise NotAchievedException("only %.2f m/s on a part stick, can't cruise" % v)
+        limit = round(v / margin, 1)
+        w.limit = limit
+        self._speed_limit_enable(limit=limit)
+        self.progress("cruising at %.2f m/s on a part stick, limit set to %.1f m/s" % (v, limit))
+        return v, limit
+
+    def _speed_limit_reenter(self, mode, what):
+        '''from RTL straight back into `mode` with full forward stick: it has to be sent home again.
+        Judged on the vehicle's own message, the watch can't tell the old RTL from the new one'''
+        self.context_clear_collection('STATUSTEXT')
+        gs = self.assert_receive_message('VFR_HUD').groundspeed
+        self.set_rc(2, 1000)
+        # not change_mode(): it can be sent home again before change_mode() sees the new mode
+        self.mav.set_mode(self.get_mode_from_mode_mapping(mode))
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=30 + self._speed_limit_spinup()).text
+        self.set_rc(2, 1500)
+        self.wait_mode('RTL', timeout=5)
+        self.progress("%s (%.1f m/s when switched back): '%s'" % (what, gs, text))
+
+    def _speed_limit_pilot(self, seconds, pitch=1500, roll=1500, yaw=1500, alt=30, until=None):
+        '''hold the sticks in STABILIZE and work the throttle to keep `alt`, until() ends it early.
+        Returns the lowest height seen'''
+        tstart = self.get_sim_time_cached()
+        lowest = 1000.0
+        while self.get_sim_time_cached() - tstart < seconds:
+            if until is not None and until():
+                break
+            m = self.assert_receive_message('GLOBAL_POSITION_INT', timeout=2)
+            height = m.relative_alt * 0.001
+            lowest = min(lowest, height)
+            throttle = int(1500 + 20 * (alt - height) + 25 * m.vz * 0.01)
+            self.set_rc_from_map({1: roll, 2: pitch, 3: max(1050, min(2000, throttle)), 4: yaw})
+        return lowest
+
+    def SpeedLimitDisabledSanity(self):
+        '''Speed limit off: the same flight goes well over the limit and stays in ALT_HOLD'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward()
+        self._speed_window(w, self._speed_limit_spinup() + 5)
+        self.set_rc(2, 1500)
+        self.progress("limit off: true speed max %.2f m/s" % w.max_true)
+        if w.max_true < self._speed_limit_well_over():
+            raise NotAchievedException("only got to %.2f m/s with the limit off" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "limit off")
+        self.do_RTL(timeout=600)
+
+    def SpeedLimitAltHoldTriggersRTL(self):
+        '''ALT_HOLD over the limit switches to RTL straight away, and RTL lands'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward()
+        self._speed_limit_wait_rtl(w, "ALT_HOLD")
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitStabilizeTriggersRTL(self):
+        '''STABILIZE over the limit switches to RTL straight away, and RTL lands'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 25)
+        self.takeoff(30, mode='STABILIZE')
+        self._speed_limit_pilot(30 + self._speed_limit_spinup(), pitch=1000, until=lambda: w.rtl_t is not None)
+        self.set_rc_from_map({1: 1500, 2: 1500, 3: 1500, 4: 1500})
+        self._speed_limit_wait_rtl(w, "STABILIZE", timeout=5)
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitBackToAltHoldOverLimit(self):
+        '''Switching back to ALT_HOLD after a speed limit RTL, still over the limit, sends it home again'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward()
+        self._speed_limit_wait_rtl(w, "first time")
+        self._speed_limit_reenter('ALT_HOLD', "back in ALT_HOLD")
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitLoiterNotChecked(self):
+        '''LOITER isn't checked: with LOIT_SPEED above the limit it flies past it and isn't sent home'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        self._speed_limit_loiter_fast()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward(mode='LOITER')
+        self._speed_window(w, self._speed_limit_spinup() + 5)
+        self.set_rc(2, 1500)
+        self.progress("LOITER: true speed max %.2f m/s, limit %.1f" % (w.max_true, self.SPEED_LIMIT))
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
+            raise NotAchievedException("LOITER only got to %.2f m/s, didn't test anything" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "LOITER")
+        self.do_RTL(timeout=900)
+
+    def SpeedLimitPosHoldNotChecked(self):
+        '''POSHOLD isn't checked: full stick flies past the limit and isn't sent home'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward(mode='POSHOLD')
+        self._speed_window(w, self._speed_limit_spinup() + 5)
+        self.set_rc(2, 1500)
+        self.progress("POSHOLD: true speed max %.2f m/s, limit %.1f" % (w.max_true, self.SPEED_LIMIT))
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
+            raise NotAchievedException("POSHOLD only got to %.2f m/s, didn't test anything" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "POSHOLD")
+        self.do_RTL(timeout=900)
+
+    def SpeedLimitAutoNotChecked(self):
+        '''AUTO isn't checked: with WPNAV_SPEED above the limit it flies past it and isn't sent home'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        self.set_parameters({"WPNAV_SPEED": self._speed_limit_nav_cms()})
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 20),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, max(400, 30 * self.SPEED_LIMIT), 0, 20),
+            (mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0),
+        ])
+        w = self._speed_limit_watch()
+        self.change_mode('LOITER')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.change_mode('AUTO')
+        self.set_rc(3, 1500)
+        self.wait_waypoint(2, 3, timeout=600)
+        self.progress("AUTO: true speed max %.2f m/s, limit %.1f" % (w.max_true, self.SPEED_LIMIT))
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
+            raise NotAchievedException("AUTO only got to %.2f m/s, didn't test anything" % w.max_true)
+        # the mission ends in its own RTL, so only the speed limit's message counts
+        self._speed_limit_assert_no_trigger(w, "AUTO", no_rtl=False)
+        self.wait_disarmed(timeout=900)
+        self._speed_limit_assert_no_trigger(w, "AUTO", no_rtl=False)
+
+    def SpeedLimitGuidedNotChecked(self):
+        '''GUIDED isn't checked: a velocity target above the limit is flown and it isn't sent home'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='GUIDED')
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < 15 + self._speed_limit_spinup():
+            self.mav.mav.set_position_target_local_ned_send(
+                0, 1, 1,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                MAV_POS_TARGET_TYPE_MASK.POS_IGNORE |
+                MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE |
+                MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE |
+                MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE,
+                0, 0, 0,
+                1.5 * self.SPEED_LIMIT, 0, 0,
+                0, 0, 0,
+                0, 0)
+            self.delay_sim_time(0.5)
+        self.progress("GUIDED: true speed max %.2f m/s, limit %.1f" % (w.max_true, self.SPEED_LIMIT))
+        if w.max_true < self.SPEED_MAX * self.SPEED_LIMIT:
+            raise NotAchievedException("GUIDED only got to %.2f m/s, didn't test anything" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "GUIDED")
+        self.do_RTL(timeout=900)
+
+    def SpeedLimitNoTriggerBelowLimit(self):
+        '''ALT_HOLD cruising under the limit, turning and yawing, is never sent home'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w, margin=0.7)
+        w.reset()
+        self.context_clear_collection('STATUSTEXT')
+        # turn with the yaw stick, with short roll inputs either way (a held roll in ALT_HOLD
+        # keeps adding sideways speed)
+        self.set_rc(4, 1700)
+        self.delay_sim_time(10)
+        self.set_rc(4, 1300)
+        self.delay_sim_time(10)
+        self.set_rc(4, 1500)
+        for pwm in (1650, 1350):
+            self.set_rc(1, pwm)
+            self.delay_sim_time(2)
+            self.set_rc(1, 1500)
+            self.delay_sim_time(3)
+        self.set_rc(2, 1500)
+        self.progress("cruising under the %.1f m/s limit: true speed %.2f-%.2f m/s, EKF max %.2f m/s" %
+                      (limit, w.min_true, w.max_true, w.max_ekf))
+        self._speed_limit_assert_no_trigger(w, "cruising under the limit")
+        self.do_RTL(timeout=900)
+
+    def SpeedLimitTailwindTriggersRTL(self):
+        '''A tailwind faster than the limit with the stick centred still sends it home (it's ground speed)'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        # from behind (SIM_WIND_DIR is where it comes from), over the limit but under the T150's top speed
+        wind = self.SPEED_LIMIT + max(3, 0.15 * self.SPEED_LIMIT)
+        heading = self.assert_receive_message('VFR_HUD').heading
+        self.set_parameters({"SIM_WIND_T": 1, "SIM_WIND_TURB": 0, "SIM_WIND_SPD": wind,
+                             "SIM_WIND_DIR": (heading + 180) % 360})
+        self._speed_limit_wait_rtl(w, "tailwind, stick centred", timeout=60)
+        self.set_parameters({"SIM_WIND_SPD": 0})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitEnableInFlight(self):
+        '''Turning the limit on while already over it sends it home straight away'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self._speed_limit_fly_forward(settle=self._speed_limit_spinup())
+        gs = self.assert_receive_message('VFR_HUD').groundspeed
+        if gs < self._speed_limit_well_over():
+            raise NotAchievedException("only at %.2f m/s before enabling" % gs)
+        self._speed_limit_assert_no_trigger(w, "limit off")
+        t_on = self.get_sim_time_cached()
+        self.set_parameters({"SPD_LIM_EN": 1})
+        self._speed_limit_wait_rtl(w, "enabled at %.1f m/s" % gs, over_since=t_on, timeout=10)
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitLowerLimitInFlight(self):
+        '''Lowering SPD_LIM_VAL below the current speed in flight sends it home straight away'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w)
+        self.delay_sim_time(10)
+        self._speed_limit_assert_no_trigger(w, "under the %.1f m/s limit" % limit)
+        lower = round(0.8 * v, 1)
+        w.limit = lower
+        t_lowered = self.get_sim_time_cached()
+        self.set_parameters({"SPD_LIM_VAL": lower})
+        self._speed_limit_wait_rtl(w, "lowered to %.1f at %.1f m/s" % (lower, v), over_since=t_lowered, timeout=10)
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitNoTriggerDuringTakeoff(self):
+        '''With a 1 m/s limit: no trigger on the ground, spooling up or taking off, then the first move sends it home'''
+        self._speed_limit_setup()
+        self._speed_limit_enable(limit=1.0)
+        w = self._speed_limit_watch(limit=1.0)
+        self.change_mode('ALT_HOLD')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(3)                 # armed on the ground, motors spinning up
+        self.takeoff(20, mode='ALT_HOLD')
+        self.delay_sim_time(5)
+        self._speed_limit_assert_no_trigger(w, "ground, spool up and takeoff")
+        w.reset()
+        self.set_rc(2, 1300)
+        self._speed_limit_wait_rtl(w, "first move after takeoff", timeout=30)
+        self.wait_disarmed(timeout=600)
+
+    def SpeedLimitRCFailsafeRTL(self):
+        '''A radio failsafe under the limit goes to RTL as usual, the speed limit isn't involved, and it lands'''
+        self._speed_limit_setup()
+        self.set_parameters({"FS_THR_ENABLE": 1})
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.set_parameters({"SIM_RC_FAIL": 1})
+        self.wait_mode('RTL', timeout=10)
+        self.wait_disarmed(timeout=900)
+        self.set_parameters({"SIM_RC_FAIL": 0})
+        self._speed_limit_assert_no_trigger(w, "radio failsafe", no_rtl=False)
+
+    def SpeedLimitVibration(self):
+        '''IMU noise under the limit never sends it home, and over the limit it still does'''
+        self._speed_limit_setup()
+        self.set_parameters({"SIM_ACC1_RND": 3, "SIM_ACC2_RND": 3})
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w)
+        w.reset()
+        self.delay_sim_time(20)
+        self.progress("IMU noise under the %.1f m/s limit: true speed max %.2f m/s, EKF max %.2f m/s" %
+                      (limit, w.max_true, w.max_ekf))
+        self._speed_limit_assert_no_trigger(w, "IMU noise under the limit")
+        w.reset()
+        self.set_rc(2, 1000)
+        self._speed_limit_wait_rtl(w, "IMU noise over the limit")
+        self.set_parameters({"SIM_ACC1_RND": 0, "SIM_ACC2_RND": 0})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitGPSLossSwitchesOff(self):
+        '''Losing GPS switches the limit off within seconds (no RTL on a drifting speed), it comes back with the GPS'''
+        self._speed_limit_setup()
+        self.set_parameters({
+            "FS_EKF_ACTION": 2,        # stay in ALT_HOLD on an EKF failsafe
+            "FS_DR_ENABLE": 0,         # and no dead reckoning failsafe
+        })
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_lost = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_DISABLE": 1, "SIM_GPS2_DISABLE": 1})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=10)
+        off_after = self.get_sim_time_cached() - t_lost
+        self.progress("GPS lost: limit off after %.1fs" % off_after)
+        if off_after > 2:
+            raise NotAchievedException("limit only switched off %.1fs after the GPS went" % off_after)
+
+        # well over the limit with no GPS: nothing knows the real speed, so no RTL
+        w.reset()
+        self.set_rc(2, 1000)
+        self.delay_sim_time(self._speed_limit_spinup())
+        self.progress("no GPS, full stick: true speed max %.2f m/s, EKF said %.2f m/s, limit %.1f" %
+                      (w.max_true, w.max_ekf, limit))
+        if w.max_true < 1.1 * limit:
+            raise NotAchievedException("only got to %.2f m/s without GPS, didn't test anything" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "no GPS")
+
+        # GPS back while still over the limit: on again after GPS_RECOVER, then home
+        t_back = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_DISABLE": 0, "SIM_GPS2_DISABLE": 0})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=30)
+        on_after = self.get_sim_time_cached() - t_back
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=15).text
+        self.wait_mode('RTL', timeout=5)
+        self.set_rc(2, 1500)
+        self.progress("GPS back: limit on after %.1fs, then '%s'" % (on_after, text))
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitOneGPSLostStaysOn(self):
+        '''With two GPS fitted, losing one isn't a GPS loss: the limit stays on and still sends it home'''
+        self._speed_limit_setup()
+        if self.get_parameter("GPS_TYPE2") == 0:
+            # the stock quad has one GPS (the T150 already has two)
+            self.set_parameters({"GPS_TYPE2": 1, "SIM_GPS2_DISABLE": 0, "GPS_AUTO_SWITCH": 1})
+            self.reboot_sitl()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameters({"SIM_GPS_DISABLE": 1})
+        self.delay_sim_time(8)
+        if self.statustext_in_collections("Speed limit off"):
+            raise NotAchievedException("limit switched off with the second GPS still working")
+        self.progress("first GPS lost, second still working: limit still on")
+        self.set_rc(2, 1000)
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=30 + self._speed_limit_spinup()).text
+        self.wait_mode('RTL', timeout=5)
+        self.set_rc(2, 1500)
+        self.progress("on the second GPS: '%s'" % text)
+        self.set_parameters({"SIM_GPS_DISABLE": 0})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitLowSatsSwitchesOff(self):
+        '''A GPS that keeps its fix but drops under 4 satellites isn't trusted: the limit goes off until they're back'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_low = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_NUMSATS": 3, "SIM_GPS2_NUMSATS": 3})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.progress("3 satellites: limit off after %.1fs" % (self.get_sim_time_cached() - t_low))
+        self.set_parameters({"SIM_GPS_NUMSATS": 10, "SIM_GPS2_NUMSATS": 10})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
+        self.progress("10 satellites: limit on again")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitPoorAccuracySwitchesOff(self):
+        '''A GPS whose horizontal accuracy is worse than 10 m isn't trusted: the limit goes off until it improves'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        self._speed_limit_cruise(w)
+        self.context_clear_collection('STATUSTEXT')
+        t_bad = self.get_sim_time_cached()
+        self.set_parameters({"SIM_GPS_ACC": 12, "SIM_GPS2_ACC": 12})
+        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.progress("12 m accuracy: limit off after %.1fs" % (self.get_sim_time_cached() - t_bad))
+        self.set_parameters({"SIM_GPS_ACC": 0.3, "SIM_GPS2_ACC": 0.3})
+        self.wait_statustext("Speed limit on: GPS back", check_context=True, timeout=10)
+        self.progress("0.3 m accuracy: limit on again")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitWarnsBeforeLimit(self):
+        '''Within SPD_LIM_WARN percent of the limit the pilot gets a warning, with no RTL'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w, margin=0.94)
+        text = self.wait_statustext("Speed warning:", check_context=True, timeout=10).text
+        self.progress("at %.2f m/s, limit %.1f: '%s'" % (v, limit, text))
+        self.delay_sim_time(5)
+        self._speed_limit_assert_no_trigger(w, "close to the limit")
+        self.set_rc(2, 1500)
+        self.change_mode('RTL')
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitRTLTakeover(self):
+        '''How hard RTL brakes when the limit sends it home (reported, kept inside the lean limit), and the alert repeats while still over the limit'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        self._speed_limit_watch()   # STATUSTEXT collection from the start
+        samples = []
+
+        def record(mav, m):
+            if m.get_type() == 'SIM_STATE':
+                samples.append((self.get_sim_time_cached(), m.vn, m.ve, m.roll, m.pitch))
+        self.install_message_hook_context(record)
+        # well away from home first (LOITER isn't checked), so RTL still has a long way to go when
+        # the limit is lowered under its speed further down
+        self.takeoff(20, mode='LOITER')
+        self.set_rc(2, 1000)
+        self.wait_distance_to_home(80, 1000, timeout=120)
+        # already over the limit in LOITER, so ALT_HOLD sends it home straight away. Not change_mode():
+        # it can be in RTL before change_mode() sees ALT_HOLD. The message marks the moment of the switch
+        self.context_clear_collection('STATUSTEXT')
+        self.mav.set_mode(self.get_mode_from_mode_mapping('ALT_HOLD'))
+        text = self.wait_statustext("Speed limit:", check_context=True, timeout=30).text
+        t_rtl = self.get_sim_time_cached()
+        self.wait_mode('RTL', timeout=5)
+        self.progress("sent home: '%s'" % text)
+        self.set_rc(2, 1500)
+        self.delay_sim_time(8)
+        # along-track acceleration from the true velocity over 0.25 s steps, from 1 s before the RTL
+        win = [x for x in samples if x[0] >= t_rtl - 1.0]
+        acc = []
+        for a, b in zip(win, win[5:]):
+            dt = b[0] - a[0]
+            v = math.hypot(a[1], a[2])
+            if dt <= 0 or v < 0.5:
+                continue
+            along = ((b[1] - a[1]) * a[1] + (b[2] - a[2]) * a[2]) / (v * dt)
+            tilt = math.degrees(math.hypot(b[3] - a[3], b[4] - a[4])) / dt
+            acc.append((a[0], along, tilt))
+        if len(acc) < 20:
+            raise NotAchievedException("only %u SIM_STATE samples around the RTL" % len(acc))
+        before = max(x[1] for x in acc if x[0] < t_rtl)
+        braking = -min(x[1] for x in acc if x[0] >= t_rtl)
+        tilt_rate = max(x[2] for x in acc if x[0] >= t_rtl)
+        jerk = max(abs(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(acc, acc[1:]) if b[0] > a[0])
+        wp_accel = self.get_parameter("WPNAV_ACCEL") * 0.01
+        angle_max = self.get_parameter("ANGLE_MAX") * 0.01
+        tilt_max = max(math.degrees(math.hypot(x[3], x[4])) for x in win if x[0] >= t_rtl)
+        self.progress("RTL takeover: accelerating at %.2f m/s/s before, braking at most %.2f m/s/s after "
+                      "(WPNAV_ACCEL %.2f), max jerk %.1f m/s/s/s, max tilt %.0f deg (ANGLE_MAX %.0f), "
+                      "max tilt rate %.0f deg/s" % (before, braking, wp_accel, jerk, tilt_max, angle_max, tilt_rate))
+        # RTL's entry is stock ArduPilot (the same as switching to RTL by hand): its braking is reported
+        # here, and only held to the airframe's lean limit
+        if tilt_max > angle_max + 5:
+            raise NotAchievedException("RTL leaned %.0f deg, over ANGLE_MAX %.0f" % (tilt_max, angle_max))
+        # lower the limit under RTL's own speed: the alert has to keep coming while it is over
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameters({"SPD_LIM_VAL": 1})
+        self.delay_sim_time(4.5)
+        alerts = [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("Speed over limit:")]
+        self.progress("RTL over a 1 m/s limit: %u alerts in 4.5 s, first '%s'" % (len(alerts), alerts[0] if alerts else ''))
+        if len(alerts) < 3:
+            raise NotAchievedException("only %u over-the-limit alerts in 4.5 s on the way home" % len(alerts))
+        self.set_parameters({"SPD_LIM_VAL": self.SPEED_LIMIT})
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitPilotOverride(self):
+        '''RC switch (RCx_OPTION 199) lets the pilot turn the limit off and back on, and a radio failsafe turns it back on'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        self.set_parameters({"RC10_OPTION": 199, "FS_THR_ENABLE": 1})
+        self.set_rc(10, 1000)
+
+        def switch(pwm, text):
+            self.context_clear_collection('STATUSTEXT')
+            self.set_rc(10, pwm)
+            self.wait_statustext(text, check_context=True, timeout=5)
+
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+
+        # override on: full speed and no RTL
+        switch(2000, "Speed limit OFF (pilot override)")
+        self.set_rc(2, 1000)
+        self._speed_window(w, self._speed_limit_spinup())
+        self.progress("override on: true speed max %.2f m/s" % w.max_true)
+        if w.max_true < self._speed_limit_well_over():
+            raise NotAchievedException("override on, but only got to %.2f m/s" % w.max_true)
+        self._speed_limit_assert_no_trigger(w, "override on")
+
+        # override off while over the limit: straight home
+        w.reset()
+        t_off = self.get_sim_time_cached()
+        switch(1000, "Speed limit ON")
+        self._speed_limit_wait_rtl(w, "override switched off", over_since=t_off, timeout=10)
+
+        # override on again, then ALT_HOLD, then lose the radio: failsafe RTL with the limit back on
+        switch(2000, "Speed limit OFF (pilot override)")
+        self.change_mode('ALT_HOLD')
+        self.set_parameters({"SIM_RC_FAIL": 1})
+        self.wait_mode('RTL', timeout=10)
+        self.wait_statustext("Speed limit ON (radio failsafe)", check_context=True, timeout=5)
+
+        # radio back with the switch still high: the limit stays on until the pilot moves it
+        self.set_parameters({"SIM_RC_FAIL": 0})
+        self.delay_sim_time(2)
+        self._speed_limit_reenter('ALT_HOLD', "radio back, switch not moved")
+        self.set_rc(10, 1000)
+        self.wait_disarmed(timeout=900)
+
+    def SpeedLimitFenceBreachAltHold(self):
+        '''ALT_HOLD cruising under the limit into a fence: the fence RTLs, not the speed limit, and it lands'''
+        self._speed_limit_setup()
+        w = self._speed_limit_watch()
+        self.takeoff(20, mode='ALT_HOLD')
+        v, limit = self._speed_limit_cruise(w)
+        # a fence 100m further on, turned on now it's up to speed
+        radius = int(self.distance_to_home(use_cached_home=True) + 100)
+        self.set_parameters({
+            "FENCE_TYPE": 2,           # circle
+            "FENCE_RADIUS": radius,
+            "FENCE_ACTION": 1,         # RTL
+            "AVOID_ENABLE": 0,
+            "FENCE_ENABLE": 1,
+        })
+        w.reset()
+        max_d = 0.0
+        tstart = self.get_sim_time()
+        while not w.saw_rtl and self.get_sim_time_cached() - tstart < 60 + 200 / v:
+            max_d = max(max_d, self.distance_to_home(use_cached_home=True))
+            self.delay_sim_time(0.2)
+        if not w.saw_rtl:
+            raise NotAchievedException("no fence breach")
+        self.set_rc(2, 1500)
+        tbreach = self.get_sim_time_cached()
+        while self.get_sim_time_cached() - tbreach < 30:
+            max_d = max(max_d, self.distance_to_home(use_cached_home=True))
+            self.delay_sim_time(0.5)
+        self._speed_limit_assert_no_trigger(w, "into the fence", no_rtl=False)
+        self.progress("ALT_HOLD at %.1f m/s (limit %.1f) into a %dm fence: %.1fm past it" %
+                      (v, limit, radius, max_d - radius))
+        self.wait_disarmed(timeout=900)
+
     def tests1a(self):
         '''return list of all tests'''
         ret = super(AutoTestCopter, self).tests()  # about 5 mins and ~20 initial tests from autotest/common.py
@@ -9490,6 +10197,29 @@ class AutoTestCopter(AutoTest):
     def testsMA(self):
         '''return list of custom MA tests'''
         ret = ([
+            self.SpeedLimitDisabledSanity,
+            self.SpeedLimitAltHoldTriggersRTL,
+            self.SpeedLimitStabilizeTriggersRTL,
+            self.SpeedLimitBackToAltHoldOverLimit,
+            self.SpeedLimitLoiterNotChecked,
+            self.SpeedLimitPosHoldNotChecked,
+            self.SpeedLimitAutoNotChecked,
+            self.SpeedLimitGuidedNotChecked,
+            self.SpeedLimitNoTriggerBelowLimit,
+            self.SpeedLimitTailwindTriggersRTL,
+            self.SpeedLimitEnableInFlight,
+            self.SpeedLimitLowerLimitInFlight,
+            self.SpeedLimitNoTriggerDuringTakeoff,
+            self.SpeedLimitRCFailsafeRTL,
+            self.SpeedLimitVibration,
+            self.SpeedLimitGPSLossSwitchesOff,
+            self.SpeedLimitOneGPSLostStaysOn,
+            self.SpeedLimitLowSatsSwitchesOff,
+            self.SpeedLimitPoorAccuracySwitchesOff,
+            self.SpeedLimitWarnsBeforeLimit,
+            self.SpeedLimitRTLTakeover,
+            self.SpeedLimitPilotOverride,
+            self.SpeedLimitFenceBreachAltHold,
             self.RTL_braking_distance,
             self.Dijkstra_FenceRecovery_OutsideInclusion,
             self.Dijkstra_FenceRecovery_InsideExclusion,
