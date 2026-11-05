@@ -45,45 +45,38 @@ void AC_SpeedLimit::set_override(bool override_on)
     _triggered = false;
 }
 
-int8_t AC_SpeedLimit::update_gps(bool gps_usable, uint32_t now_ms)
+void AC_SpeedLimit::set_gps_ok(bool gps_ok)
 {
-    if (!gps_usable) {
-        _gps_back_ms = 0;
-        if (!_gps_lost) {
-            _gps_lost = true;
-            _triggered = false;
-            return -1;
-        }
-        return 0;
+    _gps_lost = !gps_ok;
+    if (_gps_lost) {
+        _triggered = false;
     }
-    if (!_gps_lost) {
-        return 0;
-    }
-    if (_gps_back_ms == 0) {
-        _gps_back_ms = now_ms;
-        return 0;
-    }
-    if (now_ms - _gps_back_ms < GPS_RECOVER_MS) {
-        return 0;
-    }
-    _gps_lost = false;
-    _gps_back_ms = 0;
-    return 1;
 }
 
-bool AC_SpeedLimit::update(bool applies, float ground_speed)
+bool AC_SpeedLimit::can_check(float ground_speed) const
 {
     // a limit of zero or less would send the vehicle home as soon as it moved, treat it as off
-    if (!active() || !applies || _gps_lost || !isfinite(ground_speed) || !is_positive(_limit.get()) ||
-        ground_speed <= _limit) {
+    return is_active() && isfinite(ground_speed) && is_positive(_limit.get());
+}
+
+bool AC_SpeedLimit::due(bool &started, uint32_t &last_ms, uint32_t now_ms, uint32_t interval_ms)
+{
+    if (started && now_ms - last_ms < interval_ms) {
+        return false;
+    }
+    started = true;
+    last_ms = now_ms;
+    return true;
+}
+
+bool AC_SpeedLimit::update(bool should_check, float ground_speed, uint32_t now_ms)
+{
+    if (!should_check || !can_check(ground_speed) || ground_speed <= _limit) {
         _triggered = false;
         return false;
     }
-    if (_triggered) {
-        return false;
-    }
-    _triggered = true;
-    return true;
+    // still checked and still over after asking: the RTL didn't happen, ask again
+    return due(_triggered, _last_trigger_ms, now_ms, RTL_RETRY_MS);
 }
 
 float AC_SpeedLimit::warn_speed() const
@@ -94,10 +87,9 @@ float AC_SpeedLimit::warn_speed() const
     return _limit * _warn_pct * 0.01f;
 }
 
-AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool applies, bool returning, float ground_speed, uint32_t now_ms)
+AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool should_check, bool returning, float ground_speed, uint32_t now_ms)
 {
-    if (!active() || _gps_lost || !(applies || returning) || !isfinite(ground_speed) ||
-        !is_positive(_limit.get())) {
+    if (!(should_check || returning) || !can_check(ground_speed)) {
         _over = false;
         _warned = false;
         return Notice::NONE;
@@ -105,28 +97,18 @@ AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool applies, bool returning, float 
 
     // over the limit: straight away, then every OVER_NOTICE_MS for as long as it stays over
     if (ground_speed > _limit) {
-        if (!_over || now_ms - _last_over_ms >= OVER_NOTICE_MS) {
-            _over = true;
-            _last_over_ms = now_ms;
-            return Notice::OVER;
-        }
-        return Notice::NONE;
+        return due(_over, _last_over_ms, now_ms, OVER_NOTICE_MS) ? Notice::OVER : Notice::NONE;
     }
     _over = false;
 
     // getting close, only in the modes the limit covers (not on the way home)
     const float warn = warn_speed();
-    if (!applies || !is_positive(warn)) {
+    if (!should_check || !is_positive(warn)) {
         _warned = false;
         return Notice::NONE;
     }
     if (ground_speed >= warn) {
-        if (!_warned || now_ms - _last_warn_ms >= WARN_NOTICE_MS) {
-            _warned = true;
-            _last_warn_ms = now_ms;
-            return Notice::WARN;
-        }
-        return Notice::NONE;
+        return due(_warned, _last_warn_ms, now_ms, WARN_NOTICE_MS) ? Notice::WARN : Notice::NONE;
     }
     if (ground_speed < warn - WARN_HYSTERESIS * _limit) {
         _warned = false;

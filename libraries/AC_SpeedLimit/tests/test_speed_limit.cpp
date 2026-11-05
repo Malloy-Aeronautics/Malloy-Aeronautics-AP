@@ -2,7 +2,7 @@
   Tests for the ground speed limit that sends the vehicle home (AC_SpeedLimit).
 
   update() is fed a ground speed at 10Hz, the rate Copter calls it at, and the tests check
-  when it asks for an RTL.
+  when it asks for an RTL. What counts as a usable GPS is tested with AP_GPSCheck.
 
   ./waf configure --board sitl
   ./waf --target tests/test_speed_limit
@@ -19,6 +19,7 @@ namespace {
 
 struct Limiter {
     AC_SpeedLimit limit;
+    uint32_t t_ms = 1000;
 
     Limiter(float val = 10.0f, int enabled = 1)
     {
@@ -28,14 +29,14 @@ struct Limiter {
 
     // a number of 10Hz updates at a fixed speed, returns how many asked for an RTL and on which
     // update the first one came (0 = the first, -1 = none)
-    int fly(float speed, int updates, bool applies = true, int *first = nullptr)
+    int fly(float speed, int updates, bool should_check = true, int *first = nullptr)
     {
         int triggers = 0;
         if (first != nullptr) {
             *first = -1;
         }
-        for (int i = 0; i < updates; i++) {
-            if (limit.update(applies, speed)) {
+        for (int i = 0; i < updates; i++, t_ms += 100) {
+            if (limit.update(should_check, speed, t_ms)) {
                 if (triggers == 0 && first != nullptr) {
                     *first = i;
                 }
@@ -52,10 +53,10 @@ TEST(SpeedLimitRTL, DisabledByDefault)
 {
     AC_SpeedLimit limit;
     EXPECT_FALSE(limit.enabled());
-    EXPECT_FALSE(limit.active());
+    EXPECT_FALSE(limit.is_active());
     EXPECT_FLOAT_EQ(limit.limit(), 20.0f);
     for (int i = 0; i < 50; i++) {
-        EXPECT_FALSE(limit.update(true, 40.0f));
+        EXPECT_FALSE(limit.update(true, 40.0f, 1000 + 100 * i));
     }
 }
 
@@ -81,13 +82,21 @@ TEST(SpeedLimitRTL, OverTheLimitTriggersStraightAway)
     EXPECT_EQ(first, 0);
 }
 
-TEST(SpeedLimitRTL, OneOverspeedTriggersOnce)
+TEST(SpeedLimitRTL, RefusedRTLAsksAgainEverySecond)
 {
+    // still checked and still over for 5s means the RTL was refused: asked for at 0, 1, 2, 3, 4s
     Limiter l(10.0f);
     int first;
-    // stays over for 5s (if the mode change were refused): still only one RTL request
-    EXPECT_EQ(l.fly(12.0f, 50, true, &first), 1);
+    EXPECT_EQ(l.fly(12.0f, 50, true, &first), 5);
     EXPECT_EQ(first, 0);
+}
+
+TEST(SpeedLimitRTL, NoRetryOnceTheRTLHasTaken)
+{
+    // the RTL took, so the speed isn't checked any more: no more requests however long it's over
+    Limiter l(10.0f);
+    EXPECT_EQ(l.fly(12.0f, 1), 1);
+    EXPECT_EQ(l.fly(12.0f, 50, false), 0);
 }
 
 TEST(SpeedLimitRTL, TriggersAgainAfterComingBackUnder)
@@ -138,7 +147,7 @@ TEST(SpeedLimitRTL, OverrideTurnsItOff)
     l.limit.set_override(true);
     EXPECT_TRUE(l.limit.get_override());
     EXPECT_TRUE(l.limit.enabled());
-    EXPECT_FALSE(l.limit.active());
+    EXPECT_FALSE(l.limit.is_active());
     EXPECT_EQ(l.fly(30.0f, 100), 0);
 }
 
@@ -184,48 +193,44 @@ TEST(SpeedLimitRTL, EnablingInFlightWhileOver)
 TEST(SpeedLimitRTL, GPSLossTurnsItOff)
 {
     Limiter l(10.0f);
-    EXPECT_EQ(l.limit.update_gps(true, 1000), 0);
-    EXPECT_EQ(l.limit.update_gps(false, 1100), -1);        // reported once
-    EXPECT_EQ(l.limit.update_gps(false, 1200), 0);
+    l.limit.set_gps_ok(true);
+    EXPECT_TRUE(l.limit.is_active());
+    l.limit.set_gps_ok(false);
+    EXPECT_FALSE(l.limit.gps_ok());
+    EXPECT_FALSE(l.limit.is_active());
+    EXPECT_TRUE(l.limit.enabled());
     EXPECT_EQ(l.fly(30.0f, 50), 0);
 }
 
-TEST(SpeedLimitRTL, GPSBackTurnsItOnAfterRecoverTime)
+TEST(SpeedLimitRTL, GPSBackWhileOverTriggersStraightAway)
 {
     Limiter l(10.0f);
-    l.limit.update_gps(false, 1000);
-    uint32_t t = 2000;
-    EXPECT_EQ(l.limit.update_gps(true, t), 0);               // back, timer starts
-    t += AC_SpeedLimit::GPS_RECOVER_MS - 100;
-    EXPECT_EQ(l.limit.update_gps(true, t), 0);
-    EXPECT_EQ(l.fly(30.0f, 5), 0);
-    t += 100;
-    EXPECT_EQ(l.limit.update_gps(true, t), 1);               // on again, reported once
-    EXPECT_EQ(l.limit.update_gps(true, t + 100), 0);
+    l.limit.set_gps_ok(false);
+    EXPECT_EQ(l.fly(30.0f, 20), 0);
+    l.limit.set_gps_ok(true);
     int first;
-    EXPECT_EQ(l.fly(30.0f, 5, true, &first), 1);             // still over: home straight away
+    EXPECT_EQ(l.fly(30.0f, 5, true, &first), 1);
     EXPECT_EQ(first, 0);
 }
 
-TEST(SpeedLimitRTL, GPSDropoutDuringRecoveryRestartsTheWait)
+TEST(SpeedLimitRTL, GPSCriteria)
 {
-    Limiter l(10.0f);
-    l.limit.update_gps(false, 1000);
-    l.limit.update_gps(true, 2000);
-    l.limit.update_gps(false, 4000);                          // lost again before it recovered
-    EXPECT_EQ(l.limit.update_gps(true, 4500), 0);
-    EXPECT_EQ(l.limit.update_gps(true, 4500 + AC_SpeedLimit::GPS_RECOVER_MS - 1), 0);
-    EXPECT_EQ(l.limit.update_gps(true, 4500 + AC_SpeedLimit::GPS_RECOVER_MS), 1);
+    const AP_GPSCheck::Criteria c = AC_SpeedLimit::gps_criteria();
+    EXPECT_EQ(c.min_sats, 4);
+    EXPECT_FLOAT_EQ(c.max_hacc, 10.0f);
+    EXPECT_FLOAT_EQ(c.max_sacc, 2.0f);
+    EXPECT_EQ(c.timeout_ms, 1000U);
+    EXPECT_EQ(c.recover_ms, 3000U);
 }
 
 using Notice = AC_SpeedLimit::Notice;
 
 // notice() over `ms` milliseconds at 10Hz, returns how many of each it sent
 static void notices(AC_SpeedLimit &lim, float speed, uint32_t &t, uint32_t ms, int &warns, int &overs,
-                    bool applies = true, bool returning = false)
+                    bool should_check = true, bool returning = false)
 {
     for (uint32_t end = t + ms; t < end; t += 100) {
-        const Notice n = lim.notice(applies, returning, speed, t);
+        const Notice n = lim.notice(should_check, returning, speed, t);
         warns += n == Notice::WARN;
         overs += n == Notice::OVER;
     }
@@ -309,7 +314,7 @@ TEST(SpeedLimitNotice, QuietWhenOffOverriddenOrNoGPS)
     EXPECT_EQ(w + o, 0);
 
     Limiter gps(20.0f);
-    gps.limit.update_gps(false, t);
+    gps.limit.set_gps_ok(false);
     notices(gps.limit, 25.0f, t, 3000, w, o);
     EXPECT_EQ(w + o, 0);
 
