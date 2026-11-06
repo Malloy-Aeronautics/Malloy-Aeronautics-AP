@@ -1169,6 +1169,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     AP_GROUPINFO("TKOFF_RPM_MIN", 58, ParametersG2, takeoff_rpm_min, 0),
 #endif
 
+    // @Group: SN_
+    // @Path: AircraftInfo.cpp
+    AP_SUBGROUPINFO(aircraft_info, "SN_", 59, ParametersG2, AircraftInfo),
+
     // ID 62 is reserved for the SHOW_... parameters from the Skybrush fork at
     // https://github.com/skybrush-io/ardupilot
 

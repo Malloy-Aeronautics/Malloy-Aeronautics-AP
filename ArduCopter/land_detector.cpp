@@ -147,6 +147,9 @@ void Copter::set_land_complete(bool b)
     g2.stats.set_flying(!b);
 #endif
 
+    // flight hours timer (SN_FLT_HRS)
+    g2.aircraft_info.set_flying(!b);
+
     // tell AHRS flying state
     set_likely_flying(!b);
     
