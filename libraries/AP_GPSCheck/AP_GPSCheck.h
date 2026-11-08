@@ -12,7 +12,8 @@ class AP_GPS;
   The GPS is usable on an update when the caller says the EKF is navigating on it and at least one
   receiver passes receiver_ok(), so with two receivers fitted losing one isn't a GPS loss. ok()
   goes false on the first update that isn't usable, and only goes true again once the GPS has been
-  usable for recover_ms without a break, so a GPS that keeps dropping in and out stays off.
+  usable for recover_ms without a break, so a GPS that keeps dropping in and out stays off. It
+  starts off false too: after boot the GPS has to earn it the same way.
 */
 class AP_GPSCheck {
 public:
@@ -61,7 +62,7 @@ public:
     // the same with the receivers already read
     void update(const Receiver *receivers, uint8_t count, bool ekf_ok, uint32_t now_ms);
 
-    // the GPS can be trusted: usable now and not still in the recovery wait
+    // the GPS can be trusted: usable for at least recover_ms
     bool ok() const { return !_lost; }
 
     const Status &status() const { return _status; }
@@ -71,6 +72,7 @@ private:
 
     const Criteria _criteria;
     Status _status {};
-    bool _lost = false;
-    uint32_t _back_ms = 0;      // when it became usable again, 0 = not yet
+    bool _lost = true;
+    bool _recovering = false;
+    uint32_t _back_ms = 0;      // when it became usable again, while _recovering
 };

@@ -63,18 +63,19 @@ void AP_GPSCheck::debounce(bool usable, uint32_t now_ms)
 {
     if (!usable) {
         _lost = true;
-        _back_ms = 0;
+        _recovering = false;
         return;
     }
     if (!_lost) {
         return;
     }
-    if (_back_ms == 0) {
+    if (!_recovering) {
+        _recovering = true;
         _back_ms = now_ms;
         return;
     }
     if (now_ms - _back_ms >= _criteria.recover_ms) {
         _lost = false;
-        _back_ms = 0;
+        _recovering = false;
     }
 }

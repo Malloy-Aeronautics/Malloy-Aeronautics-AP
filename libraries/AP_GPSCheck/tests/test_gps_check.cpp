@@ -33,6 +33,14 @@ AP_GPSCheck::Receiver good_rx()
     return rx;
 }
 
+// a check that has had good GPS for long enough, so ok() is true at `t`
+void settle(AP_GPSCheck &check, const AP_GPSCheck::Receiver &rx, uint32_t &t)
+{
+    check.update(&rx, 1, true, t);
+    t += criteria.recover_ms;
+    check.update(&rx, 1, true, t);
+}
+
 }  // namespace
 
 TEST(GPSCheckReceiver, GoodReceiverPasses)
@@ -86,9 +94,22 @@ TEST(GPSCheckReceiver, UnreportedAccuracyIsNotHeldAgainstIt)
     EXPECT_TRUE(AP_GPSCheck::receiver_ok(rx, criteria));
 }
 
-TEST(GPSCheck, StartsOk)
+TEST(GPSCheck, StartsNotOk)
 {
     AP_GPSCheck check(criteria);
+    EXPECT_FALSE(check.ok());
+}
+
+TEST(GPSCheck, AfterBootGPSHasToEarnIt)
+{
+    AP_GPSCheck check(criteria);
+    const AP_GPSCheck::Receiver rx = good_rx();
+    check.update(&rx, 1, true, 1000);
+    EXPECT_TRUE(check.status().usable);
+    EXPECT_FALSE(check.ok());
+    check.update(&rx, 1, true, 1000 + criteria.recover_ms - 1);
+    EXPECT_FALSE(check.ok());
+    check.update(&rx, 1, true, 1000 + criteria.recover_ms);
     EXPECT_TRUE(check.ok());
 }
 
@@ -96,7 +117,9 @@ TEST(GPSCheck, EKFNotOnGPSIsNotUsable)
 {
     AP_GPSCheck check(criteria);
     const AP_GPSCheck::Receiver rx = good_rx();
-    check.update(&rx, 1, false, 1000);
+    uint32_t t = 1000;
+    settle(check, rx, t);
+    check.update(&rx, 1, false, t + 100);
     EXPECT_FALSE(check.status().usable);
     EXPECT_FALSE(check.ok());
 }
@@ -104,7 +127,9 @@ TEST(GPSCheck, EKFNotOnGPSIsNotUsable)
 TEST(GPSCheck, NoReceiversIsNotUsable)
 {
     AP_GPSCheck check(criteria);
-    check.update(nullptr, 0, true, 1000);
+    uint32_t t = 1000;
+    settle(check, good_rx(), t);
+    check.update(nullptr, 0, true, t + 100);
     EXPECT_FALSE(check.ok());
 }
 
@@ -114,9 +139,10 @@ TEST(GPSCheck, OneGoodReceiverIsEnough)
     AP_GPSCheck::Receiver rx[2] = { good_rx(), good_rx() };
     rx[0].fix_3d = false;
     check.update(rx, 2, true, 1000);
+    check.update(rx, 2, true, 1000 + criteria.recover_ms);
     EXPECT_TRUE(check.ok());
     rx[1].sats = 3;
-    check.update(rx, 2, true, 1100);
+    check.update(rx, 2, true, 1100 + criteria.recover_ms);
     EXPECT_FALSE(check.ok());
 }
 
@@ -124,10 +150,11 @@ TEST(GPSCheck, LossIsImmediate)
 {
     AP_GPSCheck check(criteria);
     AP_GPSCheck::Receiver rx = good_rx();
-    check.update(&rx, 1, true, 1000);
+    uint32_t t = 1000;
+    settle(check, rx, t);
     EXPECT_TRUE(check.ok());
     rx.hacc = 20.0f;
-    check.update(&rx, 1, true, 1100);
+    check.update(&rx, 1, true, t + 100);
     EXPECT_FALSE(check.ok());
 }
 

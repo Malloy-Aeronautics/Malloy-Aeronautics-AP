@@ -25,6 +25,7 @@ struct Limiter {
     {
         AP_Param::set_object_value(&limit, AC_SpeedLimit::var_info, "EN", enabled);
         AP_Param::set_object_value(&limit, AC_SpeedLimit::var_info, "VAL", val);
+        limit.set_gps_ok(true);
     }
 
     // a number of 10Hz updates at a fixed speed, returns how many asked for an RTL and on which
@@ -188,6 +189,18 @@ TEST(SpeedLimitRTL, EnablingInFlightWhileOver)
     EXPECT_EQ(l.fly(15.0f, 50), 0);
     AP_Param::set_object_value(&l.limit, AC_SpeedLimit::var_info, "EN", 1);
     EXPECT_EQ(l.fly(15.0f, 5), 1);
+}
+
+TEST(SpeedLimitRTL, NoGPSUntilToldSo)
+{
+    AC_SpeedLimit limit;
+    AP_Param::set_object_value(&limit, AC_SpeedLimit::var_info, "EN", 1);
+    EXPECT_FALSE(limit.gps_ok());
+    EXPECT_FALSE(limit.is_active());
+    EXPECT_FALSE(limit.update(true, 40.0f, 1000));
+    limit.set_gps_ok(true);
+    EXPECT_TRUE(limit.is_active());
+    EXPECT_TRUE(limit.update(true, 40.0f, 1100));
 }
 
 TEST(SpeedLimitRTL, GPSLossTurnsItOff)

@@ -25,9 +25,9 @@ void Copter::speed_limit_check()
     const AP_GPSCheck::Status &gps_status = speed_limit_gps.status();
     const bool gps_was_ok = g2.speed_limit.gps_ok();
     g2.speed_limit.set_gps_ok(speed_limit_gps.ok());
-    if (g2.speed_limit.enabled() && g2.speed_limit.gps_ok() != gps_was_ok) {
-        gcs().send_text(MAV_SEVERITY_NOTICE, g2.speed_limit.gps_ok() ? "Speed limit on: GPS back" :
-                                                                       "Speed limit off: no GPS");
+    // while the pilot has it switched off the GPS changes nothing, so there's nothing to say
+    if (g2.speed_limit.gps_ok() != gps_was_ok && g2.speed_limit.enabled() && !g2.speed_limit.get_override()) {
+        gcs().send_text(MAV_SEVERITY_NOTICE, "Speed limit %s", g2.speed_limit.gps_ok() ? "on: GPS good" : "off: no GPS");
     }
 
     Vector3f vel_ned;
@@ -50,10 +50,10 @@ void Copter::speed_limit_check()
         gcs().send_text(MAV_SEVERITY_ALERT, "Speed limit: %.2f m/s over %.2f, %s",
                         (double)ground_speed, (double)limit, rtl ? "RTL" : "RTL refused");
     } else if (notice == AC_SpeedLimit::Notice::OVER) {
-        gcs().send_text(MAV_SEVERITY_ALERT, "Speed over limit: %.1f m/s, limit %.1f",
+        gcs().send_text(MAV_SEVERITY_ALERT, "Speed over limit: %.2f m/s, limit %.2f",
                         (double)ground_speed, (double)limit);
     } else if (notice == AC_SpeedLimit::Notice::WARN) {
-        gcs().send_text(MAV_SEVERITY_WARNING, "Speed warning: %.1f m/s, limit %.1f",
+        gcs().send_text(MAV_SEVERITY_WARNING, "Speed warning: %.2f m/s, limit %.2f",
                         (double)ground_speed, (double)limit);
     }
 

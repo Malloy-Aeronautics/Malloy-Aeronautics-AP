@@ -19,7 +19,7 @@
 
   Without GPS the ground speed can't be trusted (the EKF carries on with a velocity that drifts),
   so the limit is off while the vehicle's AP_GPSCheck, built with gps_criteria(), says the GPS isn't
-  ok. The vehicle passes that on with set_gps_ok().
+  ok. The vehicle passes that on with set_gps_ok(). Until it does, the GPS counts as not ok.
 */
 class AC_SpeedLimit {
 public:
@@ -91,7 +91,7 @@ private:
     bool _triggered = false;
     uint32_t _last_trigger_ms = 0;
     bool _override = false;
-    bool _gps_lost = false;
+    bool _gps_lost = true;
 
     // notice() state
     bool _over = false;

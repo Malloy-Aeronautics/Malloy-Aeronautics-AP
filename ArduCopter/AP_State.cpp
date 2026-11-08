@@ -63,7 +63,9 @@ void Copter::set_failsafe_radio(bool b)
             // the pilot can't reach the switch any more, so the failsafe flies with the limit on
             if (g2.speed_limit.get_override()) {
                 g2.speed_limit.set_override(false);
-                gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit ON (radio failsafe)");
+                if (g2.speed_limit.enabled()) {
+                    gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit on: radio failsafe");
+                }
             }
             failsafe_radio_on_event();
         }
