@@ -267,16 +267,26 @@ TEST(SpeedLimitNotice, NothingWellUnderTheLimit)
     EXPECT_EQ(o, 0);
 }
 
-TEST(SpeedLimitNotice, WarnsStraightAwayThenEveryInterval)
+TEST(SpeedLimitNotice, WarnsOncePerApproach)
 {
+    // cruising just under the limit is what the pilot is meant to do, so one warning is enough
     Limiter l(20.0f);
     uint32_t t = 1000;
     int w = 0, o = 0;
     EXPECT_EQ(l.limit.notice(true, false, 18.5f, t), Notice::WARN);
     t += 100;
-    notices(l.limit, 18.5f, t, 9000, w, o);         // 9.1 s in the band in all
-    EXPECT_EQ(w, 3);                                // at 3, 6 and 9 s
+    notices(l.limit, 18.5f, t, 30000, w, o);
+    EXPECT_EQ(w, 0);
     EXPECT_EQ(o, 0);
+}
+
+TEST(SpeedLimitNotice, NoWarningOnTheWayBackDownFromOver)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    EXPECT_EQ(l.limit.notice(true, false, 18.5f, t), Notice::WARN);
+    EXPECT_EQ(l.limit.notice(true, false, 21.0f, t + 100), Notice::OVER);
+    EXPECT_EQ(l.limit.notice(true, false, 18.5f, t + 200), Notice::NONE);
 }
 
 TEST(SpeedLimitNotice, WarningNeedsToDropUnderTheHysteresis)
@@ -334,6 +344,105 @@ TEST(SpeedLimitNotice, QuietWhenOffOverriddenOrNoGPS)
     Limiter other_mode(20.0f);
     notices(other_mode.limit, 25.0f, t, 3000, w, o, false, false);
     EXPECT_EQ(w + o, 0);
+}
+
+TEST(SpeedLimitNotice, HeadsUpWhenGPSComesBackOverTheLimit)
+{
+    Limiter l(20.0f);
+    l.limit.set_gps_ok(false);
+    uint32_t t = 1000;
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, t), Notice::NONE);         // no GPS: nothing
+    l.limit.set_gps_ok(false, true);                                         // GPS coming back
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, t + 100), Notice::GPS_BACK);
+    int w = 0, o = 0;
+    t += 200;
+    notices(l.limit, 25.0f, t, 2500, w, o);                                  // once per recovery
+    EXPECT_EQ(w + o, 0);
+    l.limit.set_gps_ok(true);
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, t), Notice::OVER);
+    EXPECT_TRUE(l.limit.update(true, 25.0f, t));
+}
+
+TEST(SpeedLimitNotice, NoHeadsUpUnderTheLimitOrNotChecked)
+{
+    Limiter l(20.0f);
+    l.limit.set_gps_ok(false, true);
+    EXPECT_EQ(l.limit.notice(true, false, 15.0f, 1000), Notice::NONE);      // under the limit
+    EXPECT_EQ(l.limit.notice(false, false, 25.0f, 1100), Notice::NONE);     // LOITER, AUTO...
+    l.limit.set_override(true);
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, 1200), Notice::NONE);      // pilot switched it off
+    l.limit.set_override(false);
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, 1300), Notice::GPS_BACK);  // and now it's due
+}
+
+TEST(SpeedLimitNotice, HeadsUpAgainOnTheNextRecovery)
+{
+    Limiter l(20.0f);
+    l.limit.set_gps_ok(false, true);
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, 1000), Notice::GPS_BACK);
+    l.limit.set_gps_ok(false, false);                                        // dropped out again
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, 1100), Notice::NONE);
+    l.limit.set_gps_ok(false, true);
+    EXPECT_EQ(l.limit.notice(true, false, 25.0f, 1200), Notice::GPS_BACK);
+}
+
+using GpsNotice = AC_SpeedLimit::GpsNotice;
+
+TEST(SpeedLimitGPSNotice, ActiveOnceAtBoot)
+{
+    Limiter l(20.0f);
+    l.limit.set_gps_ok(false);
+    EXPECT_EQ(l.limit.gps_notice(1000), GpsNotice::NONE);       // never told it was active
+    l.limit.set_gps_ok(true);
+    EXPECT_EQ(l.limit.gps_notice(1100), GpsNotice::ACTIVE);
+    EXPECT_EQ(l.limit.gps_notice(1200), GpsNotice::NONE);
+}
+
+TEST(SpeedLimitGPSNotice, InactiveStraightAwayActiveHeldBack)
+{
+    Limiter l(20.0f);
+    EXPECT_EQ(l.limit.gps_notice(1000), GpsNotice::ACTIVE);
+    l.limit.set_gps_ok(false);
+    EXPECT_EQ(l.limit.gps_notice(2000), GpsNotice::INACTIVE);
+    l.limit.set_gps_ok(true);
+    EXPECT_EQ(l.limit.gps_notice(6000), GpsNotice::NONE);       // only 4 s since the last one
+    EXPECT_EQ(l.limit.gps_notice(2000 + AC_SpeedLimit::GPS_NOTICE_MS), GpsNotice::ACTIVE);
+}
+
+TEST(SpeedLimitGPSNotice, FlakyGPSIsToldOnce)
+{
+    // dropping out again before the "active" is due: the pilot only ever heard "inactive", and
+    // it stays true, so there's nothing more to say until it settles
+    Limiter l(20.0f);
+    EXPECT_EQ(l.limit.gps_notice(1000), GpsNotice::ACTIVE);
+    int inactive = 0, active = 0;
+    for (uint32_t t = 2000; t < 9000; t += 1000) {
+        l.limit.set_gps_ok((t / 1000) % 2 == 1);
+        const GpsNotice n = l.limit.gps_notice(t);
+        inactive += n == GpsNotice::INACTIVE;
+        active += n == GpsNotice::ACTIVE;
+    }
+    EXPECT_EQ(inactive, 1);
+    EXPECT_EQ(active, 0);
+    l.limit.set_gps_ok(true);
+    EXPECT_EQ(l.limit.gps_notice(20000), GpsNotice::ACTIVE);
+}
+
+TEST(SpeedLimitGPSNotice, QuietWhileOffOrOverridden)
+{
+    Limiter off(20.0f, 0);
+    EXPECT_EQ(off.limit.gps_notice(1000), GpsNotice::NONE);
+    off.limit.set_gps_ok(false);
+    EXPECT_EQ(off.limit.gps_notice(1100), GpsNotice::NONE);
+
+    Limiter ovr(20.0f);
+    ovr.limit.set_override(true);
+    ovr.limit.set_gps_ok(false);
+    EXPECT_EQ(ovr.limit.gps_notice(1000), GpsNotice::NONE);
+    ovr.limit.set_gps_ok(true);
+    EXPECT_EQ(ovr.limit.gps_notice(1100), GpsNotice::NONE);
+    ovr.limit.set_override(false);                              // the switch already said so
+    EXPECT_EQ(ovr.limit.gps_notice(1200), GpsNotice::NONE);
 }
 
 AP_GTEST_MAIN()

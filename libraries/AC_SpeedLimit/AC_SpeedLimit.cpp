@@ -24,7 +24,7 @@ const AP_Param::GroupInfo AC_SpeedLimit::var_info[] = {
 
     // @Param: WARN
     // @DisplayName: Speed limit warning
-    // @Description: Sends a warning to the ground station when the horizontal ground speed gets within this percentage of SPD_LIM_VAL, in the modes the limit covers. 0 turns the warning off
+    // @Description: Sends a warning to the ground station when the horizontal ground speed comes up to within this percentage of SPD_LIM_VAL, in the modes the limit covers. Once per approach: it warns again only after the speed has dropped back under it. 0 turns the warning off
     // @Units: %
     // @Range: 0 99
     // @Increment: 1
@@ -45,12 +45,33 @@ void AC_SpeedLimit::set_override(bool override_on)
     _triggered = false;
 }
 
-void AC_SpeedLimit::set_gps_ok(bool gps_ok)
+void AC_SpeedLimit::set_gps_ok(bool gps_ok, bool coming_back)
 {
     _gps_lost = !gps_ok;
+    _gps_coming_back = _gps_lost && coming_back;
     if (_gps_lost) {
         _triggered = false;
     }
+}
+
+AC_SpeedLimit::GpsNotice AC_SpeedLimit::gps_notice(uint32_t now_ms)
+{
+    const bool active = !_gps_lost;
+    if (!enabled() || _override) {
+        // nothing to say, just keep up so there's no stale message when it's back on
+        _told_active = active;
+        return GpsNotice::NONE;
+    }
+    if (active == _told_active) {
+        return GpsNotice::NONE;
+    }
+    if (active && _gps_told_once && now_ms - _last_gps_notice_ms < GPS_NOTICE_MS) {
+        return GpsNotice::NONE;
+    }
+    _told_active = active;
+    _gps_told_once = true;
+    _last_gps_notice_ms = now_ms;
+    return active ? GpsNotice::ACTIVE : GpsNotice::INACTIVE;
 }
 
 bool AC_SpeedLimit::can_check(float ground_speed) const
@@ -89,6 +110,15 @@ float AC_SpeedLimit::warn_speed() const
 
 AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool should_check, bool returning, float ground_speed, uint32_t now_ms)
 {
+    // once per GPS recovery: the pilot gets a chance to slow down before the RTL
+    if (!_gps_coming_back) {
+        _told_gps_back = false;
+    } else if (!_told_gps_back && enabled() && !_override && should_check && isfinite(ground_speed) &&
+               is_positive(_limit.get()) && ground_speed > _limit) {
+        _told_gps_back = true;
+        return Notice::GPS_BACK;
+    }
+
     if (!(should_check || returning) || !can_check(ground_speed)) {
         _over = false;
         _warned = false;
@@ -108,7 +138,11 @@ AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool should_check, bool returning, f
         return Notice::NONE;
     }
     if (ground_speed >= warn) {
-        return due(_warned, _last_warn_ms, now_ms, WARN_NOTICE_MS) ? Notice::WARN : Notice::NONE;
+        if (_warned) {
+            return Notice::NONE;
+        }
+        _warned = true;
+        return Notice::WARN;
     }
     if (ground_speed < warn - WARN_HYSTERESIS * _limit) {
         _warned = false;

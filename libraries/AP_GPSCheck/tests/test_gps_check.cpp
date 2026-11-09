@@ -174,6 +174,21 @@ TEST(GPSCheck, BackOnlyAfterRecoverTime)
     EXPECT_TRUE(check.ok());
 }
 
+TEST(GPSCheck, TimeLeftWhileRecovering)
+{
+    AP_GPSCheck check(criteria);
+    const AP_GPSCheck::Receiver rx = good_rx();
+    EXPECT_FALSE(check.recovering());
+    EXPECT_EQ(check.ms_until_ok(1000), 0U);
+    check.update(&rx, 1, true, 1000);
+    EXPECT_TRUE(check.recovering());
+    EXPECT_EQ(check.ms_until_ok(1000), criteria.recover_ms);
+    EXPECT_EQ(check.ms_until_ok(2000), criteria.recover_ms - 1000);
+    check.update(&rx, 1, true, 1000 + criteria.recover_ms);
+    EXPECT_FALSE(check.recovering());
+    EXPECT_EQ(check.ms_until_ok(1000 + criteria.recover_ms), 0U);
+}
+
 TEST(GPSCheck, DropoutDuringRecoveryRestartsTheWait)
 {
     AP_GPSCheck check(criteria);

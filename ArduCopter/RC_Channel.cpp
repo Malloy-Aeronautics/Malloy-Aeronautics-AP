@@ -587,19 +587,12 @@ bool RC_Channel_Copter::do_aux_function(const aux_func_t ch_option, const AuxSwi
             do_aux_function_change_force_flying(ch_flag);
             break;
 
-        case AUX_FUNC::SPEED_LIMIT_OVERRIDE: {
-            AC_SpeedLimit &speed_limit = copter.g2.speed_limit;
-            speed_limit.set_override(ch_flag == AuxSwitchPos::HIGH);
-            if (!speed_limit.enabled()) {
+        case AUX_FUNC::SPEED_LIMIT_OVERRIDE:
+            if (!copter.g2.speed_limit.enabled()) {
                 gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit not enabled (SPD_LIM_EN)");
-            } else if (speed_limit.get_override()) {
-                gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit off: pilot switch");
-            } else {
-                gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit on: pilot switch%s",
-                                speed_limit.gps_ok() ? "" : ", waiting for GPS");
             }
+            copter.speed_limit_set_override(ch_flag == AuxSwitchPos::HIGH, "pilot switch");
             break;
-        }
 
         case AUX_FUNC::AUTO_RTL:
 #if MODE_AUTO_ENABLED == ENABLED

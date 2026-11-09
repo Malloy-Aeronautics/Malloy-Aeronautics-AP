@@ -906,6 +906,7 @@ private:
 
     // speed_limit.cpp
     void speed_limit_check();
+    void speed_limit_set_override(bool override_on, const char *why);
 
     // takeoff_check.cpp
     void takeoff_check();

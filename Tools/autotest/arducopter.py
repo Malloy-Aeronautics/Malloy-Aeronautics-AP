@@ -9760,7 +9760,7 @@ class AutoTestCopter(AutoTest):
         self.context_clear_collection('STATUSTEXT')
         t_lost = self.get_sim_time_cached()
         self.set_parameters({"SIM_GPS_DISABLE": 1, "SIM_GPS2_DISABLE": 1})
-        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=10)
+        self.wait_statustext("Speed limit inactive: no GPS", check_context=True, timeout=10)
         off_after = self.get_sim_time_cached() - t_lost
         self.progress("GPS lost: limit off after %.1fs" % off_after)
         if off_after > 2:
@@ -9779,12 +9779,16 @@ class AutoTestCopter(AutoTest):
         # GPS back while still over the limit: on again after GPS_RECOVER, then home
         t_back = self.get_sim_time_cached()
         self.set_parameters({"SIM_GPS_DISABLE": 0, "SIM_GPS2_DISABLE": 0})
-        self.wait_statustext("Speed limit on: GPS good", check_context=True, timeout=30)
+        self.wait_statustext("Speed limit active$", check_context=True, timeout=30, regex=True)
         on_after = self.get_sim_time_cached() - t_back
         text = self.wait_statustext("Speed limit:", check_context=True, timeout=15).text
         self.wait_mode('RTL', timeout=5)
         self.set_rc(2, 1500)
-        self.progress("GPS back: limit on after %.1fs, then '%s'" % (on_after, text))
+        # the pilot was over the limit when the GPS came back, so they should have been told first
+        heads_up = [m.text for m in self.context_collection('STATUSTEXT') if m.text.startswith("GPS back: slow down")]
+        if not heads_up:
+            raise NotAchievedException("no warning before the limit came back on over the limit")
+        self.progress("GPS back: '%s', limit on after %.1fs, then '%s'" % (heads_up[0], on_after, text))
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitOneGPSLostStaysOn(self):
@@ -9800,7 +9804,7 @@ class AutoTestCopter(AutoTest):
         self.context_clear_collection('STATUSTEXT')
         self.set_parameters({"SIM_GPS_DISABLE": 1})
         self.delay_sim_time(8)
-        if self.statustext_in_collections("Speed limit off"):
+        if self.statustext_in_collections("Speed limit inactive"):
             raise NotAchievedException("limit switched off with the second GPS still working")
         self.progress("first GPS lost, second still working: limit still on")
         self.set_rc(2, 1000)
@@ -9820,10 +9824,10 @@ class AutoTestCopter(AutoTest):
         self.context_clear_collection('STATUSTEXT')
         t_low = self.get_sim_time_cached()
         self.set_parameters({"SIM_GPS_NUMSATS": 3, "SIM_GPS2_NUMSATS": 3})
-        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.wait_statustext("Speed limit inactive: no GPS", check_context=True, timeout=5)
         self.progress("3 satellites: limit off after %.1fs" % (self.get_sim_time_cached() - t_low))
         self.set_parameters({"SIM_GPS_NUMSATS": 10, "SIM_GPS2_NUMSATS": 10})
-        self.wait_statustext("Speed limit on: GPS good", check_context=True, timeout=10)
+        self.wait_statustext("Speed limit active$", check_context=True, timeout=20, regex=True)
         self.progress("10 satellites: limit on again")
         self.set_rc(2, 1500)
         self.change_mode('RTL')
@@ -9838,10 +9842,10 @@ class AutoTestCopter(AutoTest):
         self.context_clear_collection('STATUSTEXT')
         t_bad = self.get_sim_time_cached()
         self.set_parameters({"SIM_GPS_ACC": 12, "SIM_GPS2_ACC": 12})
-        self.wait_statustext("Speed limit off: no GPS", check_context=True, timeout=5)
+        self.wait_statustext("Speed limit inactive: no GPS", check_context=True, timeout=5)
         self.progress("12 m accuracy: limit off after %.1fs" % (self.get_sim_time_cached() - t_bad))
         self.set_parameters({"SIM_GPS_ACC": 0.3, "SIM_GPS2_ACC": 0.3})
-        self.wait_statustext("Speed limit on: GPS good", check_context=True, timeout=10)
+        self.wait_statustext("Speed limit active$", check_context=True, timeout=20, regex=True)
         self.progress("0.3 m accuracy: limit on again")
         self.set_rc(2, 1500)
         self.change_mode('RTL')
@@ -9941,7 +9945,7 @@ class AutoTestCopter(AutoTest):
         self.takeoff(20, mode='ALT_HOLD')
 
         # override on: full speed and no RTL
-        switch(2000, "Speed limit off: pilot switch")
+        switch(2000, "Speed limit inactive: pilot switch")
         self.set_rc(2, 1000)
         self._speed_window(w, self._speed_limit_spinup())
         self.progress("override on: true speed max %.2f m/s" % w.max_true)
@@ -9952,15 +9956,15 @@ class AutoTestCopter(AutoTest):
         # override off while over the limit: straight home
         w.reset()
         t_off = self.get_sim_time_cached()
-        switch(1000, "Speed limit on: pilot switch")
+        switch(1000, "Speed limit active: pilot switch")
         self._speed_limit_wait_rtl(w, "override switched off", over_since=t_off, timeout=10)
 
         # override on again, then ALT_HOLD, then lose the radio: failsafe RTL with the limit back on
-        switch(2000, "Speed limit off: pilot switch")
+        switch(2000, "Speed limit inactive: pilot switch")
         self.change_mode('ALT_HOLD')
         self.set_parameters({"SIM_RC_FAIL": 1})
         self.wait_mode('RTL', timeout=10)
-        self.wait_statustext("Speed limit on: radio failsafe", check_context=True, timeout=5)
+        self.wait_statustext("Speed limit active: radio failsafe", check_context=True, timeout=5)
 
         # radio back with the switch still high: the limit stays on until the pilot moves it
         self.set_parameters({"SIM_RC_FAIL": 0})

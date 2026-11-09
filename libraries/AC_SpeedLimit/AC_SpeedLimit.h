@@ -12,14 +12,22 @@
   and still over the limit a second later (the RTL was refused), update() asks again, once every
   RTL_RETRY_MS.
 
-  notice() says what to tell the pilot on each update: a warning when the speed gets within
-  SPD_LIM_WARN percent of the limit, and an alert for as long as it stays over the limit.
+  notice() says what to tell the pilot on each update: a warning once each time the speed comes up
+  to within SPD_LIM_WARN percent of the limit, and an alert every second for as long as it stays
+  over. If the GPS comes back while the pilot is flying over the limit, there's a heads-up first,
+  because the RTL will follow as soon as the limit is live again.
+
+  gps_notice() says when to tell the pilot the limit has gone inactive or active again because of
+  the GPS. Going inactive is always told straight away. Going active again is held back to one
+  message every GPS_NOTICE_MS, so a GPS that keeps dropping out doesn't fill the screen: the pilot
+  hears it's inactive, and then that it's active once the GPS has settled.
 
   The pilot can turn it off with an RC switch (override); a radio failsafe turns it back on.
 
   Without GPS the ground speed can't be trusted (the EKF carries on with a velocity that drifts),
   so the limit is off while the vehicle's AP_GPSCheck, built with gps_criteria(), says the GPS isn't
-  ok. The vehicle passes that on with set_gps_ok(). Until it does, the GPS counts as not ok.
+  ok. The vehicle passes that on with set_gps_ok(), along with whether the GPS is on its way back.
+  Until it does, the GPS counts as not ok.
 */
 class AC_SpeedLimit {
 public:
@@ -35,8 +43,8 @@ public:
 
     static constexpr uint32_t RTL_RETRY_MS = 1000;      // RTL refused: ask again this often
     static constexpr uint32_t OVER_NOTICE_MS = 1000;    // over the limit: alert this often
-    static constexpr uint32_t WARN_NOTICE_MS = 3000;    // close to the limit: warn this often
-    static constexpr float WARN_HYSTERESIS = 0.05f;     // of the limit, before a new warning
+    static constexpr float WARN_HYSTERESIS = 0.05f;     // of the limit, to drop under before a new warning
+    static constexpr uint32_t GPS_NOTICE_MS = 10000;    // at most one "active again" message this often
 
     AC_SpeedLimit();
 
@@ -47,16 +55,28 @@ public:
 
     enum class Notice : uint8_t {
         NONE = 0,
-        WARN = 1,   // within SPD_LIM_WARN percent of the limit
-        OVER = 2,   // over the limit
+        WARN = 1,       // within SPD_LIM_WARN percent of the limit
+        OVER = 2,       // over the limit
+        GPS_BACK = 3,   // over the limit with the GPS coming back: the RTL is about to follow
     };
 
     // what to tell the pilot this update. `should_check` as for update(); `returning` while the
     // vehicle is in the RTL the limit started, so the alerts carry on until it has slowed down
     Notice notice(bool should_check, bool returning, float ground_speed, uint32_t now_ms);
 
-    // whether the GPS can be trusted, from the vehicle's AP_GPSCheck, before each update()
-    void set_gps_ok(bool gps_ok);
+    // whether the GPS can be trusted, from the vehicle's AP_GPSCheck, before each update().
+    // coming_back: not ok yet, but usable again and waiting out GPS_RECOVER_MS
+    void set_gps_ok(bool gps_ok, bool coming_back = false);
+
+    enum class GpsNotice : uint8_t {
+        NONE,
+        INACTIVE,   // the limit has gone inactive, no GPS
+        ACTIVE,     // the limit is active again
+    };
+
+    // what to tell the pilot about the GPS this update. Only while enabled and not overridden: the
+    // pilot switch has its own messages
+    GpsNotice gps_notice(uint32_t now_ms);
 
     // SPD_LIM_EN is set (whether or not the pilot has overridden it or the GPS is lost)
     bool enabled() const { return _enabled != 0; }
@@ -92,10 +112,16 @@ private:
     uint32_t _last_trigger_ms = 0;
     bool _override = false;
     bool _gps_lost = true;
+    bool _gps_coming_back = false;
 
     // notice() state
     bool _over = false;
     bool _warned = false;
+    bool _told_gps_back = false;
     uint32_t _last_over_ms = 0;
-    uint32_t _last_warn_ms = 0;
+
+    // gps_notice() state: what the pilot was last told, and when
+    bool _told_active = false;
+    bool _gps_told_once = false;
+    uint32_t _last_gps_notice_ms = 0;
 };

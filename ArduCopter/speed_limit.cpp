@@ -23,11 +23,16 @@ void Copter::speed_limit_check()
                         ekf_has_absolute_position();
     speed_limit_gps.update(gps, ekf_ok, now_ms);
     const AP_GPSCheck::Status &gps_status = speed_limit_gps.status();
-    const bool gps_was_ok = g2.speed_limit.gps_ok();
-    g2.speed_limit.set_gps_ok(speed_limit_gps.ok());
-    // while the pilot has it switched off the GPS changes nothing, so there's nothing to say
-    if (g2.speed_limit.gps_ok() != gps_was_ok && g2.speed_limit.enabled() && !g2.speed_limit.get_override()) {
-        gcs().send_text(MAV_SEVERITY_NOTICE, "Speed limit %s", g2.speed_limit.gps_ok() ? "on: GPS good" : "off: no GPS");
+    g2.speed_limit.set_gps_ok(speed_limit_gps.ok(), speed_limit_gps.recovering());
+    switch (g2.speed_limit.gps_notice(now_ms)) {
+    case AC_SpeedLimit::GpsNotice::INACTIVE:
+        gcs().send_text(MAV_SEVERITY_NOTICE, "Speed limit inactive: no GPS");
+        break;
+    case AC_SpeedLimit::GpsNotice::ACTIVE:
+        gcs().send_text(MAV_SEVERITY_NOTICE, "Speed limit active");
+        break;
+    case AC_SpeedLimit::GpsNotice::NONE:
+        break;
     }
 
     Vector3f vel_ned;
@@ -55,6 +60,9 @@ void Copter::speed_limit_check()
     } else if (notice == AC_SpeedLimit::Notice::WARN) {
         gcs().send_text(MAV_SEVERITY_WARNING, "Speed warning: %.2f m/s, limit %.2f",
                         (double)ground_speed, (double)limit);
+    } else if (notice == AC_SpeedLimit::Notice::GPS_BACK) {
+        const uint32_t secs = (speed_limit_gps.ms_until_ok(now_ms) + 999) / 1000;
+        gcs().send_text(MAV_SEVERITY_WARNING, "GPS back: slow down, speed limit active in %us", (unsigned)secs);
     }
 
     if (!g2.speed_limit.enabled()) {
@@ -73,7 +81,7 @@ void Copter::speed_limit_check()
 // @Field: SAcc: best speed accuracy reported by those GPS, -1 if none reports one
 // @Field: On: 1 if the limit is live (not overridden, GPS not lost or still recovering)
 // @Field: Trig: 1 on an update that asked for the RTL
-// @Field: Ntc: message sent to the ground station this update: 0 none, 1 warning, 2 over the limit
+// @Field: Ntc: message sent to the ground station this update: 0 none, 1 warning, 2 over the limit, 3 GPS back while over the limit
     AP::logger().Write("SPDL", "TimeUS,Spd,Lim,Chk,Ovr,EKF,NSat,HAcc,SAcc,On,Trig,Ntc", "snn----mn---", "F00----00---", "QffBBBBffBBB",
                        AP_HAL::micros64(),
                        (double)ground_speed,
@@ -87,4 +95,24 @@ void Copter::speed_limit_check()
                        (uint8_t)g2.speed_limit.is_active(),
                        (uint8_t)trigger,
                        (uint8_t)(trigger ? AC_SpeedLimit::Notice::OVER : notice));
+}
+
+/*
+  The pilot switch (RC option 199), or a radio failsafe putting the limit back on. Says what the
+  limit is doing now, so the pilot isn't told it's active while it's still waiting for the GPS.
+*/
+void Copter::speed_limit_set_override(bool override_on, const char *why)
+{
+    AC_SpeedLimit &speed_limit = g2.speed_limit;
+    speed_limit.set_override(override_on);
+    if (!speed_limit.enabled()) {
+        return;
+    }
+    if (override_on) {
+        gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit inactive: %s", why);
+    } else if (speed_limit.gps_ok()) {
+        gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit active: %s", why);
+    } else {
+        gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit waiting for GPS: %s", why);
+    }
 }

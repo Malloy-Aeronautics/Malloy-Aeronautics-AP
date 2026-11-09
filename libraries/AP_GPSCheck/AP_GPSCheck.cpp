@@ -59,6 +59,15 @@ void AP_GPSCheck::update(const Receiver *receivers, uint8_t count, bool ekf_ok, 
     debounce(_status.usable, now_ms);
 }
 
+uint32_t AP_GPSCheck::ms_until_ok(uint32_t now_ms) const
+{
+    if (!_recovering) {
+        return 0;
+    }
+    const uint32_t waited_ms = now_ms - _back_ms;
+    return waited_ms < _criteria.recover_ms ? _criteria.recover_ms - waited_ms : 0;
+}
+
 void AP_GPSCheck::debounce(bool usable, uint32_t now_ms)
 {
     if (!usable) {

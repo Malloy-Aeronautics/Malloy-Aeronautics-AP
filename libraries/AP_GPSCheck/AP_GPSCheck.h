@@ -65,6 +65,12 @@ public:
     // the GPS can be trusted: usable for at least recover_ms
     bool ok() const { return !_lost; }
 
+    // usable again, but not for long enough yet
+    bool recovering() const { return _recovering; }
+
+    // how long until ok() comes back, while recovering(). 0 otherwise
+    uint32_t ms_until_ok(uint32_t now_ms) const;
+
     const Status &status() const { return _status; }
 
 private:
