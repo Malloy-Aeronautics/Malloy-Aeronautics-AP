@@ -9,7 +9,6 @@ name: MA CI
 on:
   push:
     branches:
-      - 'feature/**'
       - 'release/**'
   pull_request:
     branches:
