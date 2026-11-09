@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Runs the speed limiter unit tests and SITL autotests and writes a report of what each one
-checked, measured and logged. Run from the repo root with SITL built:
+checked, measured and logged. The autotests fly the T150. Run from the repo root with SITL built:
 
-    Tools/scripts/ma_test_evidence.py                        # everything
+    Tools/scripts/ma_test_evidence.py                        # everything, at 5 m/s
     Tools/scripts/ma_test_evidence.py --tests SpeedLimitLoiter
     Tools/scripts/ma_test_evidence.py --skip-sitl            # unit tests only
-    Tools/scripts/ma_test_evidence.py --frame T150 --limits 5 17 25
+    Tools/scripts/ma_test_evidence.py --limits 5 17 25
     Tools/scripts/ma_test_evidence.py --report-only evidence/<folder>
     Tools/scripts/ma_test_evidence.py --merge evidence/all evidence/run1 evidence/run2
 
@@ -690,7 +690,6 @@ def main():
     parser.add_argument("--zip", action="store_true", help="zip the evidence folder as well")
     parser.add_argument("--limits", nargs="*", type=float,
                         help="run every test at each of these speed limits (m/s), e.g. --limits 5 17 25")
-    parser.add_argument("--frame", help="airframe to fly on, e.g. T150 (MA_SPEED_LIMIT_FRAME)")
     parser.add_argument("--merge", nargs="+", metavar="FOLDER",
                         help="OUT RUN [RUN ...]: put several earlier runs (e.g. one per limit) into one report in OUT")
     parser.add_argument("--report-only", metavar="FOLDER",
@@ -769,7 +768,7 @@ def main():
             "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
             "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "host": "%s, Python %s" % (platform.platform(), platform.python_version()),
-            "frame": args.frame or "",
+            "frame": "T150",
         },
         "constants": constants(source),
         "unit": [],
@@ -794,8 +793,6 @@ def main():
             env = {}
             if limit is not None:
                 env["MA_SPEED_LIMIT"] = "%g" % limit
-            if args.frame:
-                env["MA_SPEED_LIMIT_FRAME"] = args.frame
             result = run_autotest(name, test_dir, args.timeout, buildlogs, env)
             result.update({"name": name, "description": docs.get(name, ""), "limit": limit, "dir": rel})
             result["plot"], result["stability"] = plot_for(test_dir, result["logs"])

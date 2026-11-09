@@ -3,7 +3,11 @@
 #
 #   Tools/scripts/ma_local_ci.sh          quick: lint, SITL build, unit tests, param docs   (~10 min, most of it unit tests)
 #   Tools/scripts/ma_local_ci.sh --full   also both flight controller builds and the
-#                                         speed limiter SITL autotests                (~30+ min)
+#                                         speed limiter SITL autotests on the T150, with the
+#                                         evidence report in evidence/                (~30+ min)
+#
+# The full run flies the speed limiter tests at 5 m/s. CI flies them at 5, 17 and 25 m/s; to do
+# the same here: MA_CI_LIMITS="5 17 25" Tools/scripts/ma_local_ci.sh --full
 #
 # Run it from the repo root on Ubuntu (WSL). It stops at the first failure.
 
@@ -67,23 +71,21 @@ if [ $FULL -eq 1 ]; then
     done
     # put SITL back so the autotests use it
     step "reconfigure sitl"      ./waf configure --board sitl
-    step "speed limiter autotests" bash -c \
-        "cd Tools/autotest && python3 autotest.py --no-clean \$(python3 -c \"
-import re
-s = open('arducopter.py').read()
-print(' '.join('test.Copter.' + n for n in sorted(set(re.findall(r'def (SpeedLimit\w+)\(self', s)))))
-\")"
+    # the same as the speed-limit job in ma_ci.yml, so a local run leaves the same report
+    if grep -q 'def SpeedLimit' Tools/autotest/arducopter.py && [ -f Tools/scripts/ma_test_evidence.py ]; then
+        # shellcheck disable=SC2086
+        step "speed limiter autotests" python3 Tools/scripts/ma_test_evidence.py --skip-unit \
+            --limits ${MA_CI_LIMITS:-5} --out evidence
+    else
+        echo "speed limiter autotests                 none on this branch, skipped"
+    fi
 fi
 
 # param_parse writes its output files into the repo root, tidy them up
 rm -f Parameters*.rst Parameters*.html Parameters*.md apm.pdef.xml apm.pdef.json 2>/dev/null || true
 
-# remember which commit passed, so the pre-push hook doesn't ask again for it
 if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
-    mode=quick
-    [ $FULL -eq 1 ] && mode=full
-    echo "$(git rev-parse HEAD) $mode $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$(git rev-parse --git-path ma_local_ci.passed)"
-    echo "all local checks passed, recorded for $(git rev-parse --short HEAD)"
+    echo "all local checks passed for $(git rev-parse --short HEAD)"
 else
-    echo "all local checks passed (not recorded: there are uncommitted changes, so this wasn't a test of a commit)"
+    echo "all local checks passed, including uncommitted changes"
 fi

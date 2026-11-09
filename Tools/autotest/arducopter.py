@@ -9297,31 +9297,21 @@ class AutoTestCopter(AutoTest):
 
     # ------------------------------------------------------------------------------------------
     # Speed limit (SPD_LIM_*): over the limit in STABILIZE or ALT_HOLD switches to RTL straight
-    # away, the other modes aren't checked. Set MA_SPEED_LIMIT and MA_SPEED_LIMIT_FRAME to fly
-    # these at another limit or airframe.
+    # away, the other modes aren't checked. They fly the T150; set MA_SPEED_LIMIT to fly them at
+    # another limit.
     # ------------------------------------------------------------------------------------------
     SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT", "5"))
     SPEED_MAX = 1.03           # "over the limit" for the modes that aren't checked
     # the check runs at 10Hz and the test sees the mode change in the next heartbeat
     SPEED_LIMIT_LATENCY = 1.0  # s
-    # SITL frame and model/param file name in models/
-    SPEED_LIMIT_FRAMES = {
-        "T150": ("octa-quad", "T150_sim"),
-    }
 
     def _speed_limit_frame(self):
-        '''fly on MA_SPEED_LIMIT_FRAME, with its fence off (the fence test sets its own)'''
-        name = os.environ.get("MA_SPEED_LIMIT_FRAME", "")
-        if not name:
-            return
-        if name not in self.SPEED_LIMIT_FRAMES:
-            raise NotAchievedException("unknown MA_SPEED_LIMIT_FRAME %s" % name)
-        frame, model = self.SPEED_LIMIT_FRAMES[name]
+        '''fly the T150, with its fence off (the fence test sets its own)'''
         defaults = [util.reltopdir(os.path.join(testdir, "default_params", "copter.parm")),
-                    util.reltopdir(os.path.join(testdir, "models", model + ".param"))]
+                    util.reltopdir(os.path.join(testdir, "models", "T150_sim.param"))]
         self.customise_SITL_commandline(
             ["--defaults", ",".join(defaults)],
-            model="%s:@ROMFS/models/%s.json" % (frame, model),
+            model="octa-quad:@ROMFS/models/T150_sim.json",
             wipe=True,
         )
         self.set_parameters({"FENCE_ENABLE": 0, "AVOID_ENABLE": 0})
@@ -9329,13 +9319,10 @@ class AutoTestCopter(AutoTest):
     def _speed_limit_setup(self):
         '''airframe, and the limit off to start with. RTL isn't judged, it's given a nav speed that gets
         it home in reasonable time from wherever the higher limits leave it'''
-        frame = os.environ.get("MA_SPEED_LIMIT_FRAME", "") or "the stock quad"
-        self.progress("speed limit %.1f m/s on %s" % (self.SPEED_LIMIT, frame))
+        self.progress("speed limit %.1f m/s on the T150" % self.SPEED_LIMIT)
         self._speed_limit_frame()
-        self.set_parameters({"SPD_LIM_EN": 0, "SPD_LIM_VAL": self.SPEED_LIMIT})
-        # anything other than the stock quad at 5 m/s needs a faster RTL to get home in good time
-        if self.SPEED_LIMIT != 5 or os.environ.get("MA_SPEED_LIMIT_FRAME", ""):
-            self.set_parameters({"RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
+        self.set_parameters({"SPD_LIM_EN": 0, "SPD_LIM_VAL": self.SPEED_LIMIT,
+                             "RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
 
     def _speed_limit_enable(self, limit=None):
         # the value first: enabling it while the old, lower value is still set can send it home
@@ -9794,10 +9781,6 @@ class AutoTestCopter(AutoTest):
     def SpeedLimitOneGPSLostStaysOn(self):
         '''With two GPS fitted, losing one isn't a GPS loss: the limit stays on and still sends it home'''
         self._speed_limit_setup()
-        if self.get_parameter("GPS_TYPE2") == 0:
-            # the stock quad has one GPS (the T150 already has two)
-            self.set_parameters({"GPS_TYPE2": 1, "SIM_GPS2_DISABLE": 0, "GPS_AUTO_SWITCH": 1})
-            self.reboot_sitl()
         w = self._speed_limit_watch()
         self.takeoff(20, mode='ALT_HOLD')
         self._speed_limit_cruise(w)
@@ -10311,4 +10294,6 @@ class AutoTestCAN(AutoTestCopter):
 class AutoTestCopterTestsMA(AutoTestCopter):
 
     def tests(self):
-        return self.testsMA()
+        # the speed limiter tests run on their own in ma_ci.yml, once per limit with the evidence
+        # report, so the group leaves them out. They still run by name: test.Copter.SpeedLimit...
+        return [t for t in self.testsMA() if not t.__name__.startswith("SpeedLimit")]
