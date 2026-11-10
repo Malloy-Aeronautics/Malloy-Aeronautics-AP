@@ -158,7 +158,7 @@ const AP_Param::GroupInfo AP_MotorsMulticopter::var_info[] = {
     // @Param: SPOOL_TIME
     // @DisplayName: Spool up time
     // @Description: Time in seconds to spool up the motors from zero to min throttle. 
-    // @Range: 0 2
+    // @Range: 0 20
     // @Units: s
     // @Increment: 0.1
     // @User: Advanced
