@@ -110,42 +110,58 @@ float AC_SpeedLimit::warn_speed() const
 
 AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool should_check, bool returning, float ground_speed, uint32_t now_ms)
 {
-    // once per GPS recovery: the pilot gets a chance to slow down before the RTL
-    if (!_gps_coming_back) {
-        _told_gps_back = false;
-    } else if (!_told_gps_back && enabled() && !_override && should_check && isfinite(ground_speed) &&
-               is_positive(_limit.get()) && ground_speed > _limit) {
-        _told_gps_back = true;
+    // in order: the GPS coming back while over, then over the limit, then getting close
+    if (gps_back_notice(should_check, ground_speed)) {
         return Notice::GPS_BACK;
     }
-
     if (!(should_check || returning) || !can_check(ground_speed)) {
         _over = false;
         _warned = false;
         return Notice::NONE;
     }
-
-    // over the limit: straight away, then every OVER_NOTICE_MS for as long as it stays over
     if (ground_speed > _limit) {
-        return due(_over, _last_over_ms, now_ms, OVER_NOTICE_MS) ? Notice::OVER : Notice::NONE;
+        return over_notice(now_ms) ? Notice::OVER : Notice::NONE;
     }
     _over = false;
+    return warn_notice(should_check, ground_speed) ? Notice::WARN : Notice::NONE;
+}
 
-    // getting close, only in the modes the limit covers (not on the way home)
+// once per GPS recovery, while over the limit: the pilot gets a chance to slow down before the RTL
+bool AC_SpeedLimit::gps_back_notice(bool should_check, float ground_speed)
+{
+    if (!_gps_coming_back) {
+        _told_gps_back = false;
+        return false;
+    }
+    if (_told_gps_back || !enabled() || _override || !should_check || !isfinite(ground_speed) ||
+        !is_positive(_limit.get()) || ground_speed <= _limit) {
+        return false;
+    }
+    _told_gps_back = true;
+    return true;
+}
+
+// over the limit: straight away, then every OVER_NOTICE_MS for as long as it stays over
+bool AC_SpeedLimit::over_notice(uint32_t now_ms)
+{
+    return due(_over, _last_over_ms, now_ms, OVER_NOTICE_MS);
+}
+
+// getting close: once per approach, only in the modes the limit covers (not on the way home)
+bool AC_SpeedLimit::warn_notice(bool should_check, float ground_speed)
+{
     const float warn = warn_speed();
     if (!should_check || !is_positive(warn)) {
         _warned = false;
-        return Notice::NONE;
+        return false;
     }
     if (ground_speed >= warn) {
-        if (_warned) {
-            return Notice::NONE;
-        }
+        const bool first = !_warned;
         _warned = true;
-        return Notice::WARN;
+        return first;
     }
     if (ground_speed < warn - WARN_HYSTERESIS * _limit) {
         _warned = false;
     }
-    return Notice::NONE;
+    return false;
 }

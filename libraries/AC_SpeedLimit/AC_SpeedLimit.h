@@ -101,6 +101,11 @@ private:
     bool can_check(float ground_speed) const;
     static bool due(bool &started, uint32_t &last_ms, uint32_t now_ms, uint32_t interval_ms);
 
+    // the three parts of notice(), in the order it asks them
+    bool gps_back_notice(bool should_check, float ground_speed);
+    bool over_notice(uint32_t now_ms);
+    bool warn_notice(bool should_check, float ground_speed);
+
     AP_Int8 _enabled;
     AP_Float _limit;
     AP_Int8 _warn_pct;

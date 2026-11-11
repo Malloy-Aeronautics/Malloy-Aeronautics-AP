@@ -906,6 +906,9 @@ private:
 
     // speed_limit.cpp
     void speed_limit_check();
+    void speed_limit_update_gps(uint32_t now_ms);
+    void speed_limit_notify(bool trigger, AC_SpeedLimit::Notice notice, float ground_speed, uint32_t now_ms);
+    void speed_limit_log(bool should_check, float ground_speed, bool trigger, AC_SpeedLimit::Notice notice);
     void speed_limit_set_override(bool override_on, const char *why);
 
     // takeoff_check.cpp
