@@ -6,28 +6,13 @@
 /*
   Ground speed limit that sends the vehicle home.
 
-  The vehicle calls update() at a steady rate with its ground speed and whether the speed should
-  be checked right now (armed, flying, in a mode it covers). As soon as the speed goes over
-  SPD_LIM_VAL, update() returns true and the vehicle switches to RTL. If it is still being checked
-  and still over the limit a second later (the RTL was refused), update() asks again, once every
-  RTL_RETRY_MS.
-
-  notice() says what to tell the pilot on each update: a warning once each time the speed comes up
-  to within SPD_LIM_WARN percent of the limit, and an alert every second for as long as it stays
-  over. If the GPS comes back while the pilot is flying over the limit, there's a heads-up first,
-  because the RTL will follow as soon as the limit is live again.
-
-  gps_notice() says when to tell the pilot the limit has gone inactive or active again because of
-  the GPS. Going inactive is always told straight away. Going active again is held back to one
-  message every GPS_NOTICE_MS, so a GPS that keeps dropping out doesn't fill the screen: the pilot
-  hears it's inactive, and then that it's active once the GPS has settled.
-
-  The pilot can turn it off with an RC switch (override); a radio failsafe turns it back on.
-
-  Without GPS the ground speed can't be trusted (the EKF carries on with a velocity that drifts),
-  so the limit is off while the vehicle's AP_GPSCheck, built with gps_criteria(), says the GPS isn't
-  ok. The vehicle passes that on with set_gps_ok(), along with whether the GPS is on its way back.
-  Until it does, the GPS counts as not ok.
+Ground speed limiter that triggers RTL when the vehicle exceeds the configured speed limit. update() is called regularly with the current
+ground speed and whether limit checking is active; it requests RTL whenever the speed exceeds SPD_LIM_VAL and retries at RTL_RETRY_MS intervals if
+the violation continues. notice() provides pilot warnings when approaching the limit and alerts while over it, with logic to avoid repeated alerts
+during the RTL that was triggered by the limit. It also warns when GPS recovery will reactivate limit enforcement. gps_notice() reports when the
+limit becomes inactive or active due to GPS state, rate-limiting reactivation messages to avoid noise from intermittent GPS loss. The limiter can
+be disabled by RC override and is automatically re-enabled by radio failsafe. Because reliable ground speed depends on GPS, enforcement is disabled
+whenever GPS validity reported through set_gps_ok() is not confirmed.
 */
 class AC_SpeedLimit {
 public:
@@ -121,6 +106,8 @@ private:
 
     // notice() state
     bool _over = false;
+    bool _returned_under = false;       // in the RTL the limit started, the speed has been under the limit
+    float _returned_under_limit = 0.0f; // the limit it was under
     bool _warned = false;
     bool _told_gps_back = false;
     uint32_t _last_over_ms = 0;

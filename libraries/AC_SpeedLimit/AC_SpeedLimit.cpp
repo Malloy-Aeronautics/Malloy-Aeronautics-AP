@@ -114,7 +114,16 @@ AC_SpeedLimit::Notice AC_SpeedLimit::notice(bool should_check, bool returning, f
     if (gps_back_notice(should_check, ground_speed)) {
         return Notice::GPS_BACK;
     }
-    if (!(should_check || returning) || !can_check(ground_speed)) {
+    if (!returning) {
+        _returned_under = false;
+    } else if (ground_speed <= _limit) {
+        _returned_under = true;
+        _returned_under_limit = _limit;
+    }
+    // doesn't say anything after slowed down unless the limit has been changed
+    const bool returned = returning && _returned_under && is_equal(_returned_under_limit, _limit.get());
+
+    if (!(should_check || (returning && !returned)) || !can_check(ground_speed)) {
         _over = false;
         _warned = false;
         return Notice::NONE;

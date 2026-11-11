@@ -323,6 +323,40 @@ TEST(SpeedLimitNotice, OverCarriesOnWhileReturning)
     EXPECT_EQ(w, 0);
 }
 
+TEST(SpeedLimitNotice, QuietOnceSlowedDownOnTheWayHome)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(l.limit, 25.0f, t, 3000, w, o, false, true);   // RTL braking from over the limit
+    EXPECT_EQ(o, 3);
+    o = 0;
+    notices(l.limit, 19.9f, t, 500, w, o, false, true);    // under it once
+    // then flying home at the limit, edging over it now and then: no more alerts
+    for (int i = 0; i < 20; i++) {
+        notices(l.limit, (i % 2) ? 20.1f : 19.95f, t, 700, w, o, false, true);
+    }
+    EXPECT_EQ(o, 0);
+    // the next RTL from the limit starts again
+    notices(l.limit, 25.0f, t, 1000, w, o, true, false);
+    o = 0;
+    notices(l.limit, 25.0f, t, 2000, w, o, false, true);
+    EXPECT_EQ(o, 2);
+}
+
+TEST(SpeedLimitNotice, ChangingTheLimitOnTheWayHomeAlertsAgain)
+{
+    Limiter l(20.0f);
+    uint32_t t = 1000;
+    int w = 0, o = 0;
+    notices(l.limit, 25.0f, t, 1000, w, o, false, true);
+    notices(l.limit, 19.0f, t, 1000, w, o, false, true);   // slowed down: quiet from here
+    o = 0;
+    AP_Param::set_object_value(&l.limit, AC_SpeedLimit::var_info, "VAL", 10.0f);
+    notices(l.limit, 19.0f, t, 3000, w, o, false, true);   // over the new, lower limit
+    EXPECT_EQ(o, 3);
+}
+
 TEST(SpeedLimitNotice, QuietWhenOffOverriddenOrNoGPS)
 {
     Limiter off(20.0f, 0);
