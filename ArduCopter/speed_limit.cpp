@@ -11,6 +11,11 @@ void Copter::speed_limit_check()
     const uint32_t now_ms = AP_HAL::millis();
     speed_limit_update_gps(now_ms);
 
+    if (motors->armed() && !speed_limit_was_armed) {
+        speed_limit_warn_speeds();
+    }
+    speed_limit_was_armed = motors->armed();
+
     const Mode::Number mode = flightmode->mode_number();
     const bool pilot_mode = mode == Mode::Number::STABILIZE || mode == Mode::Number::ALT_HOLD;
 
@@ -92,6 +97,33 @@ void Copter::speed_limit_notify(bool trigger, AC_SpeedLimit::Notice notice, floa
     }
     case AC_SpeedLimit::Notice::NONE:
         break;
+    }
+}
+
+/*
+  On arming, with the limit on: RTL, LOITER and the auto modes fly their own speeds and aren't
+  checked, so the pilot is warned about any set faster than the limit. RTL is where the limit sends
+  the vehicle; at RTL_SPEED 0 it flies at WPNAV_SPEED, which the WPNAV_SPEED warning covers.
+*/
+void Copter::speed_limit_warn_speeds()
+{
+    if (!g2.speed_limit.enabled()) {
+        return;
+    }
+    const float limit = g2.speed_limit.limit();
+    const struct {
+        const char *name;
+        float speed;    // m/s
+    } speeds[] {
+        { "RTL_SPEED", g.rtl_speed_cms * 0.01f },
+        { "WPNAV_SPEED", wp_nav->get_default_speed_xy() * 0.01f },
+        { "LOIT_SPEED", loiter_nav->get_speed_max_cms() * 0.01f },
+    };
+    for (const auto &s : speeds) {
+        if (s.speed > limit) {
+            gcs().send_text(MAV_SEVERITY_WARNING, "%s %.1f m/s over speed limit %.1f",
+                            s.name, (double)s.speed, (double)limit);
+        }
     }
 }
 

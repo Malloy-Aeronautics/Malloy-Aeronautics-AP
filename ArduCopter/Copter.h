@@ -515,6 +515,7 @@ private:
 
     // GPS checks for the ground speed limit
     AP_GPSCheck speed_limit_gps {AC_SpeedLimit::gps_criteria()};
+    bool speed_limit_was_armed = false;
 
     // Parachute release
 #if PARACHUTE == ENABLED
@@ -909,6 +910,7 @@ private:
     void speed_limit_update_gps(uint32_t now_ms);
     void speed_limit_notify(bool trigger, AC_SpeedLimit::Notice notice, float ground_speed, uint32_t now_ms);
     void speed_limit_log(bool should_check, float ground_speed, bool trigger, AC_SpeedLimit::Notice notice);
+    void speed_limit_warn_speeds();
     void speed_limit_set_override(bool override_on, const char *why);
 
     // takeoff_check.cpp
