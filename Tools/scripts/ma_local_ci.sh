@@ -6,8 +6,9 @@
 #                                         speed limiter SITL autotests on the T150, with the
 #                                         evidence report in evidence/                (~30+ min)
 #
-# The full run flies the speed limiter tests at 5 m/s. CI flies them at 5, 17 and 25 m/s; to do
-# the same here: MA_CI_LIMITS="5 17 25" Tools/scripts/ma_local_ci.sh --full
+# The full run flies the speed limiter tests at the T150's own limit (SPD_LIM_VAL in
+# Tools/autotest/models/T150_sim.param), as CI does. For other limits:
+# MA_CI_LIMITS="5 17" Tools/scripts/ma_local_ci.sh --full
 #
 # Run it from the repo root on Ubuntu (WSL). It stops at the first failure.
 
@@ -73,9 +74,10 @@ if [ $FULL -eq 1 ]; then
     step "reconfigure sitl"      ./waf configure --board sitl
     # the same as the speed-limit job in ma_ci.yml, so a local run leaves the same report
     if grep -q 'def SpeedLimit' Tools/autotest/arducopter.py && [ -f Tools/scripts/ma_test_evidence.py ]; then
+        t150_limit=$(awk -F, '$1 == "SPD_LIM_VAL" {gsub(/\r/, "", $2); print $2}' Tools/autotest/models/T150_sim.param)
         # shellcheck disable=SC2086
         step "speed limiter autotests" python3 Tools/scripts/ma_test_evidence.py --skip-unit \
-            --limits ${MA_CI_LIMITS:-5} --out evidence
+            --limits ${MA_CI_LIMITS:-$t150_limit} --out evidence
     else
         echo "speed limiter autotests                 none on this branch, skipped"
     fi

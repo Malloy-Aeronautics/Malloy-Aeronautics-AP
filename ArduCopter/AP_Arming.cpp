@@ -207,6 +207,30 @@ bool AP_Arming_Copter::parameter_checks(bool display_failure)
             return false;
         }
 
+        // with the speed limit on, RTL, LOITER and the auto modes have to fly at or under it: RTL is
+        // where the limit sends the vehicle, and the others fly their own speed without being checked
+        if (copter.g2.speed_limit.enabled()) {
+            const float limit = copter.g2.speed_limit.limit();
+            const float wp_speed = copter.wp_nav->get_default_speed_xy() * 0.01f;
+            if (copter.g.rtl_speed_cms > 0 && copter.g.rtl_speed_cms * 0.01f > limit) {
+                check_failed(ARMING_CHECK_PARAMETERS, display_failure, "RTL_SPEED %.1f > SPD_LIM_VAL %.1f m/s",
+                             (double)(copter.g.rtl_speed_cms * 0.01f), (double)limit);
+                return false;
+            }
+            // RTL_SPEED 0 means RTL flies at WPNAV_SPEED too
+            if (wp_speed > limit) {
+                check_failed(ARMING_CHECK_PARAMETERS, display_failure, "WPNAV_SPEED %.1f > SPD_LIM_VAL %.1f m/s",
+                             (double)wp_speed, (double)limit);
+                return false;
+            }
+            const float loiter_speed = copter.loiter_nav->get_speed_max_cms() * 0.01f;
+            if (loiter_speed > limit) {
+                check_failed(ARMING_CHECK_PARAMETERS, display_failure, "LOIT_SPEED %.1f > SPD_LIM_VAL %.1f m/s",
+                             (double)loiter_speed, (double)limit);
+                return false;
+            }
+        }
+
         #if FRAME_CONFIG == HELI_FRAME
         if (copter.g2.frame_class.get() != AP_Motors::MOTOR_FRAME_HELI_QUAD &&
             copter.g2.frame_class.get() != AP_Motors::MOTOR_FRAME_HELI_DUAL &&

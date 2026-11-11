@@ -270,7 +270,7 @@ jobs:
           retention-days: 14
 
   speed-limit:
-    # the speed limiter autotests on the T150, once per limit, run through the evidence script so
+    # the speed limiter autotests on the T150 at its own limit, run through the evidence script so
     # every run leaves a report of what each test checked and measured. The unit tests already
     # ran in the sitl job, so they're left out here. Skipped on a branch without these tests
     needs: [changes, lint]
@@ -280,14 +280,18 @@ jobs:
     container:
       image: ardupilot/ardupilot-dev-base:v0.1.3
       options: --privileged
-    strategy:
-      fail-fast: false
-      matrix:
-        limit: [5, 17, 25]     # m/s
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+
+      - name: the T150's speed limit
+        id: limit
+        shell: bash
+        # SPD_LIM_VAL in the T150's sim parameters is the one place the tests' limit is set
+        run: |
+          echo "value=$(awk -F, '$1 == "SPD_LIM_VAL" {gsub(/\r/, "", $2); print $2}' \
+            Tools/autotest/models/T150_sim.param)" >> "$GITHUB_OUTPUT"
 
       - name: any speed limiter tests on this branch
         id: tests
@@ -332,21 +336,23 @@ jobs:
           python ./waf configure --board sitl
           python ./waf copter
 
-      - name: speed limiter autotests at ${{ matrix.limit }} m/s
+      - name: speed limiter autotests at ${{ steps.limit.outputs.value }} m/s
         if: steps.tests.outputs.run == 'true'
         shell: bash
-        run: python Tools/scripts/ma_test_evidence.py --skip-unit --limits ${{ matrix.limit }} --out evidence-${{ matrix.limit }}
+        run: |
+          python Tools/scripts/ma_test_evidence.py --skip-unit --limits ${{ steps.limit.outputs.value }} \
+            --out evidence-${{ steps.limit.outputs.value }}
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.tests.outputs.run == 'true'
         with:
-          name: speed-limit-${{ matrix.limit }}ms
-          path: evidence-${{ matrix.limit }}/
+          name: speed-limit-${{ steps.limit.outputs.value }}ms
+          path: evidence-${{ steps.limit.outputs.value }}/
           if-no-files-found: ignore
           retention-days: 14
 
   speed-limit-report:
-    # one report with a column per limit, from the three runs above. Runs even when some tests
+    # one report with a column per limit, from the runs above. Runs even when some tests
     # failed, that's when the report matters most
     needs: [changes, speed-limit]
     if: always() && needs.changes.outputs.run == 'true' && needs.changes.outputs.code == 'true' && needs.speed-limit.result != 'skipped'

@@ -9297,10 +9297,11 @@ class AutoTestCopter(AutoTest):
 
     # ------------------------------------------------------------------------------------------
     # Speed limit (SPD_LIM_*): over the limit in STABILIZE or ALT_HOLD switches to RTL straight
-    # away, the other modes aren't checked. They fly the T150; set MA_SPEED_LIMIT to fly them at
-    # another limit.
+    # away, the other modes aren't checked, and with the limit on it won't arm while RTL, LOITER or
+    # the auto modes are set faster than it. They fly the T150 at its own limit, SPD_LIM_VAL in
+    # T150_sim.param; set MA_SPEED_LIMIT to fly them at another one.
     # ------------------------------------------------------------------------------------------
-    SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT", "5"))
+    SPEED_LIMIT = None         # m/s, read by _speed_limit_frame()
     SPEED_MAX = 1.03           # "over the limit" for the modes that aren't checked
     # the check runs at 10Hz and the test sees the mode change in the next heartbeat
     SPEED_LIMIT_LATENCY = 1.0  # s
@@ -9315,18 +9316,23 @@ class AutoTestCopter(AutoTest):
             wipe=True,
         )
         self.set_parameters({"FENCE_ENABLE": 0, "AVOID_ENABLE": 0})
+        self.SPEED_LIMIT = float(os.environ.get("MA_SPEED_LIMIT") or self.get_parameter("SPD_LIM_VAL"))
 
     def _speed_limit_setup(self):
-        '''airframe, and the limit off to start with. RTL isn't judged, it's given a nav speed that gets
-        it home in reasonable time from wherever the higher limits leave it'''
-        self.progress("speed limit %.1f m/s on the T150" % self.SPEED_LIMIT)
+        '''airframe, and the limit off to start with. RTL and the auto modes fly at the limit, the
+        fastest the arming check allows'''
         self._speed_limit_frame()
+        self.progress("speed limit %.1f m/s on the T150" % self.SPEED_LIMIT)
         self.set_parameters({"SPD_LIM_EN": 0, "SPD_LIM_VAL": self.SPEED_LIMIT,
-                             "RTL_SPEED": 0, "WPNAV_SPEED": self._speed_limit_nav_cms()})
+                             "RTL_SPEED": 0, "WPNAV_SPEED": int(100 * self.SPEED_LIMIT)})
 
     def _speed_limit_enable(self, limit=None):
-        # the value first: enabling it while the old, lower value is still set can send it home
-        self.set_parameter("SPD_LIM_VAL", limit if limit is not None else self.SPEED_LIMIT)
+        limit = limit if limit is not None else self.SPEED_LIMIT
+        # the value first: enabling it while the old, lower value is still set can send it home.
+        # WPNAV_SPEED (RTL's speed too) and LOIT_SPEED come down with it, or it won't arm
+        self.set_parameter("SPD_LIM_VAL", limit)
+        for name in ("WPNAV_SPEED", "LOIT_SPEED"):
+            self.set_parameter(name, min(int(100 * limit), self.get_parameter(name)))
         self.set_parameter("SPD_LIM_EN", 1)
 
     def _speed_limit_nav_cms(self):
@@ -9342,8 +9348,8 @@ class AutoTestCopter(AutoTest):
         return 15 + max(0, self.SPEED_LIMIT - 5)
 
     def _speed_limit_loiter_fast(self):
-        '''LOITER faster than the limit. The T150's 20 deg LOIT_ANG_MAX can't reach 25 m/s, so above
-        20 m/s it gets the full ANGLE_MAX'''
+        '''LOITER faster than the limit, once armed (the arming check refuses it before). The T150's
+        20 deg LOIT_ANG_MAX can't reach 25 m/s, so above 20 m/s it gets the full ANGLE_MAX'''
         self.set_parameters({"LOIT_SPEED": self._speed_limit_nav_cms()})
         if self.SPEED_LIMIT > 20:
             self.set_parameters({"LOIT_ANG_MAX": self.get_parameter("ANGLE_MAX") / 100})
@@ -9537,12 +9543,13 @@ class AutoTestCopter(AutoTest):
         self.wait_disarmed(timeout=900)
 
     def SpeedLimitLoiterNotChecked(self):
-        '''LOITER isn't checked: with LOIT_SPEED above the limit it flies past it and isn't sent home'''
+        '''LOITER isn't checked: with LOIT_SPEED raised above the limit after arming, it flies past it and isn't sent home'''
         self._speed_limit_setup()
         self._speed_limit_enable()
-        self._speed_limit_loiter_fast()
         w = self._speed_limit_watch()
-        self._speed_limit_fly_forward(mode='LOITER')
+        self.takeoff(20, mode='LOITER')
+        self._speed_limit_loiter_fast()
+        self.set_rc(2, 1000)
         self._speed_window(w, self._speed_limit_spinup() + 5)
         self.set_rc(2, 1500)
         self.progress("LOITER: true speed max %.2f m/s, limit %.1f" % (w.max_true, self.SPEED_LIMIT))
@@ -9566,10 +9573,9 @@ class AutoTestCopter(AutoTest):
         self.do_RTL(timeout=900)
 
     def SpeedLimitAutoNotChecked(self):
-        '''AUTO isn't checked: with WPNAV_SPEED above the limit it flies past it and isn't sent home'''
+        '''AUTO isn't checked: with WPNAV_SPEED raised above the limit after arming, it flies past it and isn't sent home'''
         self._speed_limit_setup()
         self._speed_limit_enable()
-        self.set_parameters({"WPNAV_SPEED": self._speed_limit_nav_cms()})
         self.upload_simple_relhome_mission([
             (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 20),
             (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, max(400, 30 * self.SPEED_LIMIT), 0, 20),
@@ -9579,6 +9585,8 @@ class AutoTestCopter(AutoTest):
         self.change_mode('LOITER')
         self.wait_ready_to_arm()
         self.arm_vehicle()
+        # only once armed: the arming check refuses a WPNAV_SPEED over the limit
+        self.set_parameters({"WPNAV_SPEED": self._speed_limit_nav_cms()})
         self.change_mode('AUTO')
         self.set_rc(3, 1500)
         self.wait_waypoint(2, 3, timeout=600)
@@ -9862,6 +9870,7 @@ class AutoTestCopter(AutoTest):
         # well away from home first (LOITER isn't checked), so RTL still has a long way to go when
         # the limit is lowered under its speed further down
         self.takeoff(20, mode='LOITER')
+        self._speed_limit_loiter_fast()
         self.set_rc(2, 1000)
         self.wait_distance_to_home(80, 1000, timeout=120)
         # already over the limit in LOITER, so ALT_HOLD sends it home straight away. Not change_mode():
@@ -9911,6 +9920,26 @@ class AutoTestCopter(AutoTest):
             raise NotAchievedException("only %u over-the-limit alerts in 4.5 s on the way home" % len(alerts))
         self.set_parameters({"SPD_LIM_VAL": self.SPEED_LIMIT})
         self.wait_disarmed(timeout=900)
+
+    def SpeedLimitArmingChecks(self):
+        '''With the limit on it won't arm while RTL, LOITER or the auto modes are set faster than it'''
+        self._speed_limit_setup()
+        self._speed_limit_enable()
+        self.change_mode('LOITER')
+        limit_cms = int(100 * self.SPEED_LIMIT)
+        for params, text in (
+                ({"RTL_SPEED": limit_cms + 100, "WPNAV_SPEED": limit_cms}, "RTL_SPEED"),
+                ({"RTL_SPEED": 0, "WPNAV_SPEED": limit_cms + 100}, "WPNAV_SPEED"),     # RTL at WPNAV_SPEED
+                ({"RTL_SPEED": limit_cms, "WPNAV_SPEED": limit_cms + 100}, "WPNAV_SPEED"),
+                ({"WPNAV_SPEED": limit_cms, "LOIT_SPEED": limit_cms + 100}, "LOIT_SPEED")):
+            self.set_parameters(params)
+            self.assert_prearm_failure(text, other_prearm_failures_fatal=False)
+        # at the limit it arms, and with the limit off any speed does
+        self.set_parameters({"RTL_SPEED": limit_cms, "WPNAV_SPEED": limit_cms, "LOIT_SPEED": limit_cms})
+        self.wait_ready_to_arm()
+        self.set_parameters({"SPD_LIM_EN": 0, "RTL_SPEED": 2 * limit_cms, "WPNAV_SPEED": 2 * limit_cms,
+                             "LOIT_SPEED": 2 * limit_cms})
+        self.wait_ready_to_arm()
 
     def SpeedLimitPilotOverride(self):
         '''RC switch (RCx_OPTION 199) lets the pilot turn the limit off and back on, and a radio failsafe turns it back on'''
@@ -10205,6 +10234,7 @@ class AutoTestCopter(AutoTest):
             self.SpeedLimitPoorAccuracySwitchesOff,
             self.SpeedLimitWarnsBeforeLimit,
             self.SpeedLimitRTLTakeover,
+            self.SpeedLimitArmingChecks,
             self.SpeedLimitPilotOverride,
             self.SpeedLimitFenceBreachAltHold,
             self.RTL_braking_distance,
