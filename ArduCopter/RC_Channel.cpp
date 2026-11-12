@@ -103,6 +103,7 @@ void RC_Channel_Copter::init_aux_function(const aux_func_t ch_option, const AuxS
     case AUX_FUNC::SIMPLE_HEADING_RESET:
     case AUX_FUNC::ARMDISARM_AIRMODE:
     case AUX_FUNC::TURBINE_START:
+    case AUX_FUNC::SPEED_LIMIT_OVERRIDE:    // the limit is always on at boot, the pilot has to move the switch
         break;
     case AUX_FUNC::ACRO_TRAINER:
     case AUX_FUNC::ATTCON_ACCEL_LIM:
@@ -584,6 +585,13 @@ bool RC_Channel_Copter::do_aux_function(const aux_func_t ch_option, const AuxSwi
 
         case AUX_FUNC::FORCEFLYING:
             do_aux_function_change_force_flying(ch_flag);
+            break;
+
+        case AUX_FUNC::SPEED_LIMIT_OVERRIDE:
+            if (!copter.g2.speed_limit.enabled()) {
+                gcs().send_text(MAV_SEVERITY_WARNING, "Speed limit not enabled (SPD_LIM_EN)");
+            }
+            copter.speed_limit_set_override(ch_flag == AuxSwitchPos::HIGH, "pilot switch");
             break;
 
         case AUX_FUNC::AUTO_RTL:

@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - MA-4.3.0.X
-      - 'feature/**'
     paths-ignore:
       # remove other vehicles
       - 'AntennaTracker/**'

@@ -67,6 +67,7 @@
 #include <AC_AutoTune/AC_AutoTune_Heli.h>   // ArduCopter autotune library. support for autotune of helicopters.
 #include <AP_Parachute/AP_Parachute.h>      // ArduPilot parachute release library
 #include <AC_Sprayer/AC_Sprayer.h>          // Crop sprayer library
+#include <AP_GPSCheck/AP_GPSCheck.h>        // is the GPS good enough to trust
 #include <AP_ADSB/AP_ADSB.h>                // ADS-B RF based collision avoidance module library
 #include <AP_Proximity/AP_Proximity.h>      // ArduPilot proximity sensor library
 
@@ -512,6 +513,10 @@ private:
     AC_Sprayer sprayer;
 #endif
 
+    // GPS checks for the ground speed limit
+    AP_GPSCheck speed_limit_gps {AC_SpeedLimit::gps_criteria()};
+    bool speed_limit_was_armed = false;
+
     // Parachute release
 #if PARACHUTE == ENABLED
     AP_Parachute parachute{relay};
@@ -899,6 +904,14 @@ private:
     bool rangefinder_alt_ok() const;
     bool rangefinder_up_ok() const;
     void update_optical_flow(void);
+
+    // speed_limit.cpp
+    void speed_limit_check();
+    void speed_limit_update_gps(uint32_t now_ms);
+    void speed_limit_notify(bool trigger, AC_SpeedLimit::Notice notice, float ground_speed, uint32_t now_ms);
+    void speed_limit_log(bool should_check, float ground_speed, bool trigger, AC_SpeedLimit::Notice notice);
+    void speed_limit_warn_speeds();
+    void speed_limit_set_override(bool override_on, const char *why);
 
     // takeoff_check.cpp
     void takeoff_check();

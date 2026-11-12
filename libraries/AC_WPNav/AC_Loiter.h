@@ -47,6 +47,9 @@ public:
     /// get maximum lean angle when using loiter
     float get_angle_max_cd() const;
 
+    /// get maximum horizontal speed in loiter (LOIT_SPEED), in cm/s
+    float get_speed_max_cms() const { return _speed_cms; }
+
     /// run the loiter controller
     void update(bool avoidance_on = true);
 

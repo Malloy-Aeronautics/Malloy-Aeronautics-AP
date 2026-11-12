@@ -1,17 +1,14 @@
 name: MA CI
 
-# All the MA checks in one workflow, replacing ma_lint.yml and ma_board_builds.yml.
-# Runs once per change: on pull requests into a release branch, and on pushes to a release
-#   changes are that the lint will run for both sitl and board checks
-#   ci-passed waits for all of them
-
-#   changes to check for lint on sitl and the board compilation
-
+# All the MA checks in one workflow: lint, SITL build and unit tests, the flight controller
+# builds, and the speed limiter autotests on the T150 with their evidence report. Runs on pull
+# requests into a release branch and on pushes to feature and release branches; a push to a
+# branch that has an open pull request leaves it to the pull request run. ci-passed waits for
+# all of them.
 
 on:
   push:
     branches:
-      - 'feature/**'
       - 'release/**'
   pull_request:
     branches:
@@ -272,11 +269,146 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  speed-limit:
+    # the speed limiter autotests on the T150 at its own limit, run through the evidence script so
+    # every run leaves a report of what each test checked and measured. The unit tests already
+    # ran in the sitl job, so they're left out here. Skipped on a branch without these tests
+    needs: [changes, lint]
+    if: needs.changes.outputs.run == 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    container:
+      image: ardupilot/ardupilot-dev-base:v0.1.3
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: the T150's speed limit
+        id: limit
+        shell: bash
+        # SPD_LIM_VAL in the T150's sim parameters is the one place the tests' limit is set
+        run: |
+          echo "value=$(awk -F, '$1 == "SPD_LIM_VAL" {gsub(/\r/, "", $2); print $2}' \
+            Tools/autotest/models/T150_sim.param)" >> "$GITHUB_OUTPUT"
+
+      - name: any speed limiter tests on this branch
+        id: tests
+        shell: bash
+        run: |
+          if grep -q 'def SpeedLimit' Tools/autotest/arducopter.py && [ -f Tools/scripts/ma_test_evidence.py ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no speed limiter tests on this branch, nothing to run"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.tests.outputs.run == 'true'
+        with:
+          python-version: '3.10'
+
+      - name: python packages for the build and the autotests
+        if: steps.tests.outputs.run == 'true'
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan pymavlink==2.4.49 MAVProxy==1.8.74
+
+      - name: ccache timestamp
+        if: steps.tests.outputs.run == 'true'
+        id: ccache_ts
+        shell: bash
+        run: echo "timestamp=$(date -u +%F-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: restore ccache
+        if: steps.tests.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ma-ci-ccache-sitl-${{ steps.ccache_ts.outputs.timestamp }}
+          restore-keys: ma-ci-ccache-sitl-
+
+      - name: build copter SITL
+        if: steps.tests.outputs.run == 'true'
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . .github/workflows/ccache.env
+          python ./waf configure --board sitl
+          python ./waf copter
+
+      - name: speed limiter autotests at ${{ steps.limit.outputs.value }} m/s
+        if: steps.tests.outputs.run == 'true'
+        shell: bash
+        run: |
+          python Tools/scripts/ma_test_evidence.py --skip-unit --limits ${{ steps.limit.outputs.value }} \
+            --out evidence-${{ steps.limit.outputs.value }}
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.tests.outputs.run == 'true'
+        with:
+          name: speed-limit-${{ steps.limit.outputs.value }}ms
+          path: evidence-${{ steps.limit.outputs.value }}/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  speed-limit-report:
+    # one report with a column per limit, from the runs above. Runs even when some tests
+    # failed, that's when the report matters most
+    needs: [changes, speed-limit]
+    if: always() && needs.changes.outputs.run == 'true' && needs.changes.outputs.code == 'true' && needs.speed-limit.result != 'skipped'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: speed-limit-*ms
+          path: runs
+
+      - name: anything to put together
+        id: runs
+        shell: bash
+        run: |
+          runs="$(find runs -name results.json -printf '%h\n' 2>/dev/null | sort)"
+          if [ -z "$runs" ]; then
+            echo "::notice::no speed limiter runs to report on"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$runs"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.runs.outputs.found == 'true'
+        with:
+          python-version: '3.10'
+
+      - name: python packages for the report
+        if: steps.runs.outputs.found == 'true'
+        run: python -m pip install pymavlink==2.4.49
+
+      - name: one report for every limit
+        if: steps.runs.outputs.found == 'true'
+        shell: bash
+        run: |
+          mapfile -t runs < <(find runs -name results.json -printf '%h\n' | sort)
+          python Tools/scripts/ma_test_evidence.py --merge evidence "${runs[@]}"
+          cat evidence/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.runs.outputs.found == 'true'
+        with:
+          name: speed-limit-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+
   ci-passed:
     # the one check to require in the release branch rules ("ci-passed", the pull request
     # result). Skipped jobs count as passed, so a documentation-only PR can still be merged.
     name: ${{ github.event_name == 'pull_request' && 'ci-passed' || 'ci-passed (push)' }}
-    needs: [changes, lint, sitl, boards]
+    needs: [changes, lint, sitl, boards, speed-limit, speed-limit-report]
     # not at all when the push run handed over to the PR run
     if: always() && needs.changes.outputs.run != 'false'
     runs-on: ubuntu-22.04

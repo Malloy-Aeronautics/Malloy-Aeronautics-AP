@@ -135,7 +135,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    container: ardupilot/ardupilot-dev-${{ matrix.toolchain }}:v0.1.3
+    container:
+      image: ardupilot/ardupilot-dev-${{ matrix.toolchain }}:v0.1.3
+      options: --dns 8.8.8.8 --dns 1.1.1.1
     strategy:
       fail-fast: false # don't cancel if a job from the matrix fails
       matrix:
@@ -146,9 +148,6 @@ jobs:
             #chibios-clang,
           ]
         gcc: [10]
-        exclude:
-          - gcc: 10
-            toolchain: chibios-clang
 
     steps:
       # git checkout the PR

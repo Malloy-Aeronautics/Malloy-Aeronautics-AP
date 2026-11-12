@@ -60,6 +60,10 @@ void Copter::set_failsafe_radio(bool b)
         }else{
             // We've lost radio contact
             // ------------------------
+            // the pilot can't reach the switch any more, so the failsafe flies with the limit on
+            if (g2.speed_limit.get_override()) {
+                speed_limit_set_override(false, "radio failsafe");
+            }
             failsafe_radio_on_event();
         }
 
