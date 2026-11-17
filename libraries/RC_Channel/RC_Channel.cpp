@@ -944,9 +944,9 @@ bool RC_Channel::run_aux_function(aux_func_t ch_option, AuxSwitchPos pos, AuxFun
     rc().set_aux_cached(ch_option, pos);
 #endif
 
-	if ((ch_option == AUX_FUNC::GRIPPER) && (source == AuxFuncTriggerSource::INIT)) {
-		return true;
-	}
+    if ((ch_option == AUX_FUNC::GRIPPER) && (source == AuxFuncTriggerSource::INIT)) {
+        return true;
+    }
 
     const bool ret = do_aux_function(ch_option, pos);
 
