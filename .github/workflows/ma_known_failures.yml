@@ -1,0 +1,80 @@
+name: MA known failures
+
+# Re-runs the copter autotests that disabled_tests() in Tools/autotest/arducopter.py skips in the
+# CI groups, one at a time, so they don't get forgotten. Never fails the run: the job summary
+# lists which still fail and which pass now. A test that passes here can come off the list.
+#
+# Start it by hand from the Actions tab (any branch). The weekly run only happens if this file
+# is on the repository's default branch, that's a GitHub rule for scheduled workflows.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'       # Mondays 03:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ma-known-failures-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  known-failures:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container:
+      image: ardupilot/ardupilot-dev-base:v0.1.3
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      # waf in this 4.3 tree only runs on Python 3.10 or older
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: python packages for the build and the autotests
+        run: python -m pip install empy==3.3.4 future lxml pexpect dronecan pymavlink==2.4.49 MAVProxy==1.8.74
+
+      - name: build copter SITL
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python ./waf configure --board sitl
+          python ./waf copter
+
+      - name: run each known failure
+        shell: bash
+        run: |
+          # keep in step with the MA entries in disabled_tests()
+          tests="ArmFeatures SITLCompassCalibration AP_Avoidance DataFlash DataFlashErase
+                 Dijkstra_FenceRecovery_PathPlanningReturn"
+          {
+            echo "### Known failures"
+            echo
+            echo "| Test | Result | Time |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cd Tools/autotest
+          for t in $tests; do
+            start=$SECONDS
+            if python autotest.py --no-clean "test.Copter.$t" > "/tmp/known_$t.log" 2>&1; then
+              result="passes now, can come off the list"
+            else
+              result="still fails: $(grep -m1 -oE 'FAILED: .*' "/tmp/known_$t.log" | cut -c1-120)"
+            fi
+            echo "$t: $result"
+            echo "| $t | $result | $((SECONDS - start))s |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: known-failure-logs
+          path: |
+            /tmp/known_*.log
+            /tmp/buildlogs
+          if-no-files-found: ignore
+          retention-days: 14
