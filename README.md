@@ -1,4 +1,4 @@
-# ArduPilot Project
+# MA-Copter
 
 <a href="https://ardupilot.org/discord"><img src="https://img.shields.io/discord/674039678562861068.svg" alt="Discord">
 
@@ -18,144 +18,81 @@
 
 [![Autotest Status](https://autotest.ardupilot.org/autotest-badge.svg)](https://autotest.ardupilot.org/)
 
-ArduPilot is the most advanced, full-featured, and reliable open source autopilot software available.
-It has been under development since 2010 by a diverse team of professional engineers, computer scientists, and community contributors.
-Our autopilot software is capable of controlling almost any vehicle system imaginable, from conventional airplanes, quad planes, multi-rotors, and helicopters to rovers, boats, balance bots, and even submarines.
-It is continually being expanded to provide support for new emerging vehicle types.
+[![MA CI](https://github.com/Malloy-Aeronautics/Malloy-Aeronautics-AP/actions/workflows/ma_ci.yml/badge.svg)](https://github.com/Malloy-Aeronautics/Malloy-Aeronautics-AP/actions/workflows/ma_ci.yml)
 
-## The ArduPilot project is made up of: ##
+MA-Copter is Malloy Aeronautics' flight controller firmware: a fork of [ArduPilot](https://github.com/ArduPilot/ardupilot) Copter 4.3, with the changes our aircraft need on top. Anything not described in a release branch's [RELEASE.md](RELEASE.md) behaves as in ArduPilot Copter 4.3, and the [Copter documentation](https://ardupilot.org/copter/index.html) applies.
 
-- ArduCopter: [code](https://github.com/ArduPilot/ardupilot/tree/master/ArduCopter), [wiki](https://ardupilot.org/copter/index.html)
+## Contents
 
-- ArduPlane: [code](https://github.com/ArduPilot/ardupilot/tree/master/ArduPlane), [wiki](https://ardupilot.org/plane/index.html)
+- [Releases](#releases)
+- [Branches and how changes get in](#branches-and-how-changes-get-in)
+- [Building](#building)
+- [SITL on the T150 model](#sitl-on-the-t150-model)
+- [Testing and CI](#testing-and-ci)
+- [ArduPilot upstream](#ardupilot-upstream)
 
-- Rover: [code](https://github.com/ArduPilot/ardupilot/tree/master/Rover), [wiki](https://ardupilot.org/rover/index.html)
+## Releases
 
-- ArduSub : [code](https://github.com/ArduPilot/ardupilot/tree/master/ArduSub), [wiki](http://ardusub.com/)
+Each release lives on its own branch, `release/MA-<version>`, and each release candidate is a tag on it, `MA-Copter-<version>-rc.<n>`. The firmware, the release notes and binaries for every release candidate are on the [Releases](https://github.com/Malloy-Aeronautics/Malloy-Aeronautics-AP/releases) page, and the notes for a branch are in its [RELEASE.md](RELEASE.md).
 
-- Antenna Tracker : [code](https://github.com/ArduPilot/ardupilot/tree/master/AntennaTracker), [wiki](https://ardupilot.org/antennatracker/index.html)
+## Branches and how changes get in
 
-## User Support & Discussion Forums ##
+| Branch | Use |
+|---|---|
+| `MA-4.3.0.X` | Main branch |
+| `release/MA-<version>` | One per release. Release candidates are tagged here |
+| `feature/<name>` | All work, one feature per branch |
 
-- Support Forum: <https://discuss.ardupilot.org/>
+- Nothing goes into a release branch without a reviewed pull request, and `ci-passed` has to pass.
+- This README is the same on every branch. Change it on `MA-4.3.0.X` and merge it into the release branches; anything specific to one release goes in that branch's `RELEASE.md`.
+- Firmware under `build/` (`build/<board>/bin/arducopter.apj`) is tracked for releases. Don't commit local builds of it.
 
-- Community Site: <https://ardupilot.org>
+## Building
 
-## Developer Information ##
+Set up the build environment as for ArduPilot: [Linux](https://ardupilot.org/dev/docs/building-setup-linux.html), [WSL](https://ardupilot.org/dev/docs/building-setup-windows10_new.html), then:
 
-- Github repository: <https://github.com/ArduPilot/ardupilot>
+```bash
+git clone --recurse-submodules https://github.com/Malloy-Aeronautics/Malloy-Aeronautics-AP.git
+cd Malloy-Aeronautics-AP
 
-- Main developer wiki: <https://ardupilot.org/dev/>
+# flight controllers
+./waf configure --board CubeOrange && ./waf copter
+./waf configure --board mRoControlZeroOEMH7 && ./waf copter
+# firmware: build/<board>/bin/arducopter.apj
 
-- Developer discussion: <https://discuss.ardupilot.org>
+# SITL
+./waf configure --board sitl && ./waf copter
+```
 
-- Developer chat: <https://discord.com/channels/ardupilot>
+## SITL on the T150 model
 
-## Top Contributors ##
+```bash
+Tools/autotest/sim_vehicle.py -v ArduCopter --no-rebuild -w -L CMAC \
+  --model "octa-quad:@ROMFS/models/T150_sim.json" \
+  --add-param-file=Tools/autotest/models/T150_sim.param \
+  --console --map
+```
 
-- [Flight code contributors](https://github.com/ArduPilot/ardupilot/graphs/contributors)
-- [Wiki contributors](https://github.com/ArduPilot/ardupilot_wiki/graphs/contributors)
-- [Most active support forum users](https://discuss.ardupilot.org/u?order=post_count&period=quarterly)
-- [Partners who contribute financially](https://ardupilot.org/about/Partners)
+To fly an aircraft's own parameter file in SITL, add it as another `--add-param-file` after `T150_sim.param`, followed by a SITL-only file that puts back what SITL needs: the `SIM_*`, IMU and compass IDs, battery sensing and `GPS_AUTO_CONFIG 0` from `T150_sim.param`. Never load that SITL-only file onto an aircraft.
 
-## How To Get Involved ##
+## Testing and CI
 
-- The ArduPilot project is open source and we encourage participation and code contributions: [guidelines for contributors to the ardupilot codebase](https://ardupilot.org/dev/docs/contributing.html)
+**MA CI** (`.github/workflows/ma_ci.yml`) runs on pull requests into release branches. `ci-passed` is the one check to require.
 
-- We have an active group of Beta Testers to help us improve our code: [release procedures](https://ardupilot.org/dev/docs/release-procedures.html)
+**Locally**, before pushing. The same script runs as a git pre-push hook:
 
-- Desired Enhancements and Bugs can be posted to the [issues list](https://github.com/ArduPilot/ardupilot/issues).
+```bash
+Tools/scripts/ma_local_ci.sh
+```
 
-- Help other users with log analysis in the [support forums](https://discuss.ardupilot.org/)
+**Unit tests and autotests** for a release's features are in its [RELEASE.md](RELEASE.md).
 
-- Improve the wiki and chat with other [wiki editors on Discord #documentation](https://discord.com/channels/ardupilot)
+## ArduPilot upstream
 
-- Contact the developers on one of the [communication channels](https://ardupilot.org/copter/docs/common-contact-us.html)
+MA-Copter is built on ArduPilot, which is developed by a large community and licensed under the [GNU General Public License, version 3](https://github.com/ArduPilot/ardupilot/blob/master/COPYING.txt).
 
-## License ##
-
-The ArduPilot project is licensed under the GNU General Public
-License, version 3.
-
-- [Overview of license](https://dev.ardupilot.com/wiki/license-gplv3)
-
-- [Full Text](https://github.com/ArduPilot/ardupilot/blob/master/COPYING.txt)
-
-## Maintainers ##
-
-ArduPilot is comprised of several parts, vehicles and boards. The list below
-contains the people that regularly contribute to the project and are responsible
-for reviewing patches on their specific area.
-
-- [Andrew Tridgell](https://github.com/tridge):
-  - ***Vehicle***: Plane, AntennaTracker
-  - ***Board***: Pixhawk, Pixhawk2, PixRacer
-- [Francisco Ferreira](https://github.com/oxinarf):
-  - ***Bug Master***
-- [Grant Morphett](https://github.com/gmorph):
-  - ***Vehicle***: Rover
-- [Willian Galvani](https://github.com/williangalvani):
-  - ***Vehicle***: Sub
-- [Lucas De Marchi](https://github.com/lucasdemarchi):
-  - ***Subsystem***: Linux
-- [Michael du Breuil](https://github.com/WickedShell):
-  - ***Subsystem***: Batteries
-  - ***Subsystem***: GPS
-  - ***Subsystem***: Scripting
-- [Peter Barker](https://github.com/peterbarker):
-  - ***Subsystem***: DataFlash, Tools
-- [Randy Mackay](https://github.com/rmackay9):
-  - ***Vehicle***: Copter, Rover, AntennaTracker
-- [Siddharth Purohit](https://github.com/bugobliterator):
-  - ***Subsystem***: CAN, Compass
-  - ***Board***: Cube*
-- [Tom Pittenger](https://github.com/magicrub):
-  - ***Vehicle***: Plane
-- [Bill Geyer](https://github.com/bnsgeyer):
-  - ***Vehicle***: TradHeli
-- [Emile Castelnuovo](https://github.com/emilecastelnuovo):
-  - ***Board***: VRBrain
-- [Georgii Staroselskii](https://github.com/staroselskii):
-  - ***Board***: NavIO
-- [Gustavo José de Sousa](https://github.com/guludo):
-  - ***Subsystem***: Build system
-- [Julien Beraud](https://github.com/jberaud):
-  - ***Board***: Bebop & Bebop 2
-- [Leonard Hall](https://github.com/lthall):
-  - ***Subsystem***: Copter attitude control and navigation
-- [Matt Lawrence](https://github.com/Pedals2Paddles):
-  - ***Vehicle***: 3DR Solo & Solo based vehicles
-- [Matthias Badaire](https://github.com/badzz):
-  - ***Subsystem***: FRSky
-- [Mirko Denecke](https://github.com/mirkix):
-  - ***Board***: BBBmini, BeagleBone Blue, PocketPilot
-- [Paul Riseborough](https://github.com/priseborough):
-  - ***Subsystem***: AP_NavEKF2
-  - ***Subsystem***: AP_NavEKF3
-- [Víctor Mayoral Vilches](https://github.com/vmayoral):
-  - ***Board***: PXF, Erle-Brain 2, PXFmini
-- [Amilcar Lucas](https://github.com/amilcarlucas):
-  - ***Subsystem***: Marvelmind
-- [Samuel Tabor](https://github.com/samuelctabor):
-  - ***Subsystem***: Soaring/Gliding
-- [Henry Wurzburg](https://github.com/Hwurzburg):
-  - ***Subsystem***: OSD
-  - ***Site***: Wiki
-- [Peter Hall](https://github.com/IamPete1):
-  - ***Vehicle***: Tailsitters
-  - ***Vehicle***: Sailboat
-  - ***Subsystem***: Scripting
-- [Andy Piper](https://github.com/andyp1per):
-  - ***Subsystem***: Crossfire
-  - ***Subsystem***: ESC
-  - ***Subsystem***: OSD
-  - ***Subsystem***: SmartAudio
-- [Alessandro Apostoli ](https://github.com/yaapu):
-  - ***Subsystem***: Telemetry
-  - ***Subsystem***: OSD
-- [Rishabh Singh ](https://github.com/rishabsingh3003):
-  - ***Subsystem***: Avoidance/Proximity
-- [David Bussenschutt ](https://github.com/davidbuzz):
-  - ***Subsystem***: ESP32,AP_HAL_ESP32
-- [Charles Villard ](https://github.com/Silvanosky):
-  - ***Subsystem***: ESP32,AP_HAL_ESP32
+- Copter documentation: <https://ardupilot.org/copter/index.html>
+- Developer wiki: <https://ardupilot.org/dev/>
+- Upstream repository: <https://github.com/ArduPilot/ardupilot>
+- Support forum: <https://discuss.ardupilot.org/>
+- Upstream maintainers and contributors: [ArduPilot README](https://github.com/ArduPilot/ardupilot#maintainers), [contributors](https://github.com/ArduPilot/ardupilot/graphs/contributors)
