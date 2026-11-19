@@ -32,6 +32,9 @@
 #ifndef GPS_MAX_RECEIVERS
 #define GPS_MAX_RECEIVERS 2 // maximum number of physical GPS sensors allowed - does not include virtual GPS created by blending receiver data
 #endif
+#ifndef GPS_MAX_RATE_MS
+#define GPS_MAX_RATE_MS 250 // maximum value of rate_ms (i.e. slowest update rate) is 4hz or 250ms
+#endif
 #if !defined(GPS_MAX_INSTANCES)
 #if GPS_MAX_RECEIVERS > 1
 #define GPS_MAX_INSTANCES  (GPS_MAX_RECEIVERS + 1) // maximum number of GPS instances including the 'virtual' GPS created by blending receiver data
@@ -607,6 +610,12 @@ protected:
         UBX_Use115200     = (1U << 2U),
         UAVCAN_MBUseDedicatedBus  = (1 << 3U),
         HeightEllipsoid   = (1U << 4),
+        // Y-wire moving baseline: base UART1 TX is shared to the flight
+        // controller and the rover UART2 RX. Mutually exclusive with
+        // UBX_MBUseUart2; if both are set, UART2 interlink wins.
+        UBX_MBBaseUart1ToRoverUart2 = (1U << 5),
+        // moving baseline base sends RTCM MSM4 observations instead of MSM7
+        UBX_MBUseMSM4     = (1U << 6),
     };
 
     // check if an option is set

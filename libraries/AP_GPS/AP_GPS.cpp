@@ -51,9 +51,6 @@
 #include <AP_Logger/AP_Logger.h>
 
 #define GPS_RTK_INJECT_TO_ALL 127
-#ifndef GPS_MAX_RATE_MS
-#define GPS_MAX_RATE_MS 200 // maximum value of rate_ms (i.e. slowest update rate) is 5hz or 200ms
-#endif
 #define GPS_BAUD_TIME_MS 1200
 #define GPS_TIMEOUT_MS 4000u
 
@@ -201,20 +198,20 @@ const AP_Param::GroupInfo AP_GPS::var_info[] = {
 
     // @Param: _RATE_MS
     // @DisplayName: GPS update rate in milliseconds
-    // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
+    // @Description: Controls how often the GPS should provide a position update. Lowering below 4Hz is not allowed. Raising the rate above 5Hz(default) usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
     // @Units: ms
-    // @Values: 100:10Hz,125:8Hz,200:5Hz
-    // @Range: 50 200
+    // @Values: 100:10Hz,125:8Hz,200:5Hz,250:4Hz
+    // @Range: 50 250
     // @User: Advanced
     AP_GROUPINFO("_RATE_MS", 14, AP_GPS, _rate_ms[0], 200),
 
 #if GPS_MAX_RECEIVERS > 1
     // @Param: _RATE_MS2
     // @DisplayName: GPS 2 update rate in milliseconds
-    // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
+    // @Description: Controls how often the GPS should provide a position update. Lowering below 4Hz is not allowed. Raising the rate above 5Hz(default) usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.
     // @Units: ms
-    // @Values: 100:10Hz,125:8Hz,200:5Hz
-    // @Range: 50 200
+    // @Values: 100:10Hz,125:8Hz,200:5Hz,250:4Hz
+    // @Range: 50 250
     // @User: Advanced
     AP_GROUPINFO("_RATE_MS2", 15, AP_GPS, _rate_ms[1], 200),
 #endif
@@ -311,7 +308,7 @@ const AP_Param::GroupInfo AP_GPS::var_info[] = {
     // @Param: _DRV_OPTIONS
     // @DisplayName: driver options
     // @Description: Additional backend specific options
-    // @Bitmask: 0:Use UART2 for moving baseline on ublox,1:Use base station for GPS yaw on SBF,2:Use baudrate 115200,3:Use dedicated CAN port b/w GPSes for moving baseline,4:Use ellipsoid height instead of AMSL for uBlox driver
+    // @Bitmask: 0:Use UART2 for moving baseline on ublox,1:Use base station for GPS yaw on SBF,2:Use baudrate 115200,3:Use dedicated CAN port b/w GPSes for moving baseline,4:Use ellipsoid height instead of AMSL for uBlox driver,5:Use UART1 to UART2 for moving baseline on ublox,6:Use RTCM MSM4 instead of MSM7 for moving baseline on ublox
     // @User: Advanced
     AP_GROUPINFO("_DRV_OPTIONS", 22, AP_GPS, _driver_options, 0),
 
@@ -970,7 +967,7 @@ void AP_GPS::update_instance(uint8_t instance)
 
     if (data_should_be_logged) {
         // keep count of delayed frames and average frame delay for health reporting
-        const uint16_t gps_max_delta_ms = 245; // 200 ms (5Hz) + 45 ms buffer
+        const uint16_t gps_max_delta_ms = MAX(get_rate_ms(instance), 200U) + 45; // update interval (min 5Hz) + 45 ms buffer
         GPS_timing &t = timing[instance];
 
         if (t.delta_time_ms > gps_max_delta_ms) {
@@ -1152,10 +1149,7 @@ void AP_GPS::update_primary(void)
     for (uint8_t i=0; i<GPS_MAX_RECEIVERS; i++) {
         if (((_type[i] == GPS_TYPE_UBLOX_RTK_BASE) || (_type[i] == GPS_TYPE_UAVCAN_RTK_BASE)) &&
             ((_type[i^1] == GPS_TYPE_UBLOX_RTK_ROVER) || (_type[i^1] == GPS_TYPE_UAVCAN_RTK_ROVER)) &&
-            ((state[i].status >= GPS_OK_FIX_3D) || (state[i].status >= state[i^1].status)) && 
-            // [NHW] Added in checks for GPS performance before switching to check it's not donkey
-            ((state[i].vertical_accuracy <= 1.0) || (state[i].vertical_accuracy <= state[i^1].vertical_accuracy)) &&
-            ((state[i].horizontal_accuracy <= 1.0) || (state[i].horizontal_accuracy <= state[i^1].horizontal_accuracy))) {
+            ((state[i].status >= GPS_OK_FIX_3D) || (state[i].status >= state[i^1].status))) {
             if (primary_instance != i) {
                 _last_instance_swap_ms = now;
                 primary_instance = i;
@@ -1218,31 +1212,26 @@ void AP_GPS::update_primary(void)
         if (i == primary_instance) {
             continue;
         }
-        if ((state[i].status > state[primary_instance].status) &&
-            // [NHW] adding in additional health check for GPS status before switching
-            ((state[i].vertical_accuracy <= 1.0) || (state[i].vertical_accuracy <= state[primary_instance].vertical_accuracy)) &&
-            ((state[i].horizontal_accuracy <= 1.0) || (state[i].horizontal_accuracy <= state[primary_instance].horizontal_accuracy))) {
-            // we have a higher status lock (plus the additional performance checks), or primary is set to the blended GPS, change GPS
+        if (state[i].status > state[primary_instance].status) {
+            // we have a higher status lock, or primary is set to the blended GPS, change GPS
             primary_instance = i;
             _last_instance_swap_ms = now;
             continue;
         }
 
         bool another_gps_has_1_or_more_sats = (state[i].num_sats >= state[primary_instance].num_sats + 1);
-        // [NHW] Add check for better accuracy
-        bool another_gps_has_better_accuracy =  ((state[i].vertical_accuracy <= state[primary_instance].vertical_accuracy) && (state[i].horizontal_accuracy <= state[primary_instance].horizontal_accuracy));
-        if (state[i].status == state[primary_instance].status && another_gps_has_1_or_more_sats && another_gps_has_better_accuracy) {
+
+        if (state[i].status == state[primary_instance].status && another_gps_has_1_or_more_sats) {
 
             bool another_gps_has_2_or_more_sats = (state[i].num_sats >= state[primary_instance].num_sats + 2);
 
-            if ((another_gps_has_1_or_more_sats && another_gps_has_better_accuracy && (now - _last_instance_swap_ms) >= 20000) ||
-                (another_gps_has_2_or_more_sats && another_gps_has_better_accuracy && (now - _last_instance_swap_ms) >= 5000)) {
+            if ((another_gps_has_1_or_more_sats && (now - _last_instance_swap_ms) >= 20000) ||
+                (another_gps_has_2_or_more_sats && (now - _last_instance_swap_ms) >= 5000)) {
                 // this GPS has more satellites than the
                 // current primary, switch primary. Once we switch we will
                 // then tend to stick to the new GPS as primary. We don't
                 // want to switch too often as it will look like a
                 // position shift to the controllers.
-                // [NHW] Also now checks for better accuracy before it does this.
                 primary_instance = i;
                 _last_instance_swap_ms = now;
             }
@@ -2065,12 +2054,13 @@ bool AP_GPS::is_healthy(uint8_t instance) const
 
     /*
       allow two lost frames before declaring the GPS unhealthy, but
-      require the average frame rate to be close to 5Hz. We allow for
-      a bit higher average for a rover due to the packet loss that
-      happens with the RTCMv3 data
+      require the average frame rate to be close to the configured
+      rate. We allow for a bit higher average for a rover due to the
+      packet loss that happens with the RTCMv3 data
      */
     const uint8_t delay_threshold = 2;
-    const float delay_avg_max = ((_type[instance] == GPS_TYPE_UBLOX_RTK_ROVER) || (_type[instance] == GPS_TYPE_UAVCAN_RTK_ROVER))?245:215;
+    const float delay_avg_max = MAX(get_rate_ms(instance), 200U) +
+        (((_type[instance] == GPS_TYPE_UBLOX_RTK_ROVER) || (_type[instance] == GPS_TYPE_UAVCAN_RTK_ROVER))?45:15);
     const GPS_timing &t = timing[instance];
     bool delay_ok = (t.delayed_count < delay_threshold) &&
         t.average_delta_ms < delay_avg_max &&

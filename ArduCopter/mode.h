@@ -563,8 +563,8 @@ private:
 
 public:
 
-	bool is_takeoff_complete() { return verify_takeoff(); }
-	bool is_land_complete() { return verify_land(); }
+    bool is_takeoff_complete() { return verify_takeoff(); }
+    bool is_land_complete() { return verify_land(); }
 
 private:
 
