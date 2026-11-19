@@ -25,6 +25,8 @@ from common import NotAchievedException, AutoTestTimeoutException, PreconditionF
 from common import Test
 from common import MAV_POS_TARGET_TYPE_MASK
 
+import ma_airframes
+
 from pymavlink.rotmat import Vector3
 
 # get location of scripts
@@ -9295,6 +9297,61 @@ class AutoTestCopter(AutoTest):
         self.clear_fence()
         self.disarm_vehicle(force=True)
 
+    # ------------------------------------------------------------------------------------------
+    # MA airframes (Tools/autotest/ma_airframes.py): set MA_AIRFRAME to fly on one of them
+    # ------------------------------------------------------------------------------------------
+    MA_AIRFRAME_MAX_TILT = 5.0          # deg, hovering in still air
+    MA_AIRFRAME_HOVER_TOLERANCE = 0.4   # learned hover throttle within 40% of the model's
+
+    def _ma_airframe_setup(self):
+        '''start SITL on MA_AIRFRAME; returns its name'''
+        name = os.environ.get("MA_AIRFRAME", "")
+        if name not in ma_airframes.AIRFRAMES:
+            raise NotAchievedException("set MA_AIRFRAME to one of %s" % ", ".join(ma_airframes.AIRFRAMES))
+        if not ma_airframes.ready(name):
+            raise NotAchievedException("%s has no SITL model yet" % name)
+        self.progress("flying on %s" % name)
+        self.customise_SITL_commandline(
+            ["--defaults", ",".join(ma_airframes.defaults(name))],
+            model=ma_airframes.model(name),
+            wipe=True,
+        )
+        return name
+
+    def _ma_max_tilt(self, seconds):
+        '''largest roll or pitch in degrees over the next seconds of sim time'''
+        tstart = self.get_sim_time()
+        worst = 0
+        while self.get_sim_time_cached() < tstart + seconds:
+            m = self.mav.recv_match(type='ATTITUDE', blocking=True, timeout=5)
+            if m is not None:
+                worst = max(worst, abs(math.degrees(m.roll)), abs(math.degrees(m.pitch)))
+        return worst
+
+    def MAAirframeFlight(self):
+        '''take off, hover, fly out 100 m and RTL on MA_AIRFRAME, checking it holds steady and
+        hovers at the throttle its model says'''
+        name = self._ma_airframe_setup()
+        expected_hover = ma_airframes.model_data(name)["hoverThrOut"]
+
+        self.takeoff(20, mode="GUIDED")
+        self.change_mode("LOITER")
+        self.hover()
+        self.delay_sim_time(10)                     # settle after the climb
+        tilt = self._ma_max_tilt(30)
+        hover = self.get_parameter("MOT_THST_HOVER")
+        self.progress("MA airframe result: %s max tilt %.1f deg, hover throttle %.3f (model %.3f)" %
+                      (name, tilt, hover, expected_hover))
+
+        if tilt > self.MA_AIRFRAME_MAX_TILT:
+            raise NotAchievedException("%s doesn't hold steady: %.1f deg tilt hovering" % (name, tilt))
+        if abs(hover - expected_hover) > self.MA_AIRFRAME_HOVER_TOLERANCE * expected_hover:
+            raise NotAchievedException("%s hovers at %.3f, its model says %.3f" % (name, hover, expected_hover))
+
+        self.change_mode("GUIDED")
+        self.fly_guided_move_local(100, 0, 20)
+        self.do_RTL()
+
     def tests1a(self):
         '''return list of all tests'''
         ret = super(AutoTestCopter, self).tests()  # about 5 mins and ~20 initial tests from autotest/common.py
@@ -9490,6 +9547,7 @@ class AutoTestCopter(AutoTest):
     def testsMA(self):
         '''return list of custom MA tests'''
         ret = ([
+            self.MAAirframeFlight,
             self.RTL_braking_distance,
             self.Dijkstra_FenceRecovery_OutsideInclusion,
             self.Dijkstra_FenceRecovery_InsideExclusion,

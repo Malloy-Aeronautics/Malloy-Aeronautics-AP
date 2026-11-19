@@ -1,0 +1,72 @@
+# T400 in SITL: what SITL needs on top of T400.param. Never load this onto an aircraft.
+# Load order: default_params/copter.parm, T400.param, then this file.
+# Models: T400_payload_sim.json at MTOW (530 kg), T400_empty_sim.json without payload (365 kg).
+
+# --- frame: the T400 is an octa-quad H (FRAME_CLASS 4, FRAME_TYPE 3). SITL has no octa-quad H, only
+#     octa-quad X. H and X have the motors in the same places and only spin them the other way, so
+#     X flies the same in SITL; with H on SITL's X frame the yaw control would be reversed.
+FRAME_TYPE,1
+
+# --- IMUs: all three in use (INS_ENABLE_MASK 127, EK3_IMU_MASK 7), so SITL simulates three and all
+#     three need non-zero calibration to count as calibrated
+SIM_IMU_COUNT,3
+INS_ACCOFFS_X,0.001
+INS_ACCOFFS_Y,0.001
+INS_ACCOFFS_Z,0.001
+INS_ACCSCAL_X,1.001
+INS_ACCSCAL_Y,1.001
+INS_ACCSCAL_Z,1.001
+INS_ACC2OFFS_X,0.001
+INS_ACC2OFFS_Y,0.001
+INS_ACC2OFFS_Z,0.001
+INS_ACC2SCAL_X,1.001
+INS_ACC2SCAL_Y,1.001
+INS_ACC2SCAL_Z,1.001
+INS_ACC3OFFS_X,0.001
+INS_ACC3OFFS_Y,0.001
+INS_ACC3OFFS_Z,0.001
+INS_ACC3SCAL_X,1.001
+INS_ACC3SCAL_Y,1.001
+INS_ACC3SCAL_Z,1.001
+
+# --- compass and baro: SITL's own sensors
+COMPASS_PRIO1_ID,97539
+COMPASS_PRIO2_ID,131874
+COMPASS_PRIO3_ID,263178
+SIM_BARO_COUNT,2
+
+# --- GPS: two u-blox receivers as moving baseline (GPS_TYPE 18/17 from T400.param), at the
+#     T400's antenna positions. SITL can't be configured like a real receiver.
+GPS_AUTO_CONFIG,0
+SIM_GPS_TYPE,1
+SIM_GPS2_TYPE,1
+SIM_GPS2_DISABLE,0
+SIM_GPS_HDG,1
+SIM_GPS_POS_X,0.91
+SIM_GPS_POS_Y,0
+SIM_GPS_POS_Z,0
+SIM_GPS2_POS_X,-0.49
+SIM_GPS2_POS_Y,0
+SIM_GPS2_POS_Z,0
+
+# --- battery: SITL's analog battery, in the same units as the T400's battery monitor, which reads a
+#     scaled voltage rather than the pack's (MOT_BAT_VOLT_MIN 8.064 to MOT_BAT_VOLT_MAX 13.44, low
+#     battery at 8.5). 13.2 is a full battery in the T400's logs. The model's thrust follows it, so
+#     lowering SIM_BATT_VOLTAGE in a test lowers the thrust available.
+BATT_VOLT_PIN,13
+BATT_CURR_PIN,12
+BATT_VOLT_MULT,10.1
+BATT_AMP_PERVLT,17
+SIM_BATT_VOLTAGE,13.2
+
+# --- CAN: SITL here has no CAN bus, so the CAN gripper (GRIP_TYPE 3) can't run; gripper tests
+#     need their own setup
+CAN_P1_DRIVER,0
+GRIP_ENABLE,0
+
+# --- RC: the autotests fly with throttle on channel 3, as ArduPilot's own tests expect. The T400's
+#     transmitter has throttle on channel 1 (RCMAP_THROTTLE 1); that's the radio, not the aircraft.
+RCMAP_ROLL,1
+RCMAP_PITCH,2
+RCMAP_THROTTLE,3
+RCMAP_YAW,4

@@ -2,6 +2,7 @@
 # Local version of the CI checks, run before pushing.
 #
 #   Tools/scripts/ma_local_ci.sh          quick: lint, SITL build, unit tests, param docs   (~10 min, most of it unit tests)
+#   Tools/scripts/ma_local_ci.sh --airframes   only fly the T150 and T400, empty and with payload
 #   Tools/scripts/ma_local_ci.sh --full   also both flight controller builds and the
 #                                         speed limiter SITL autotests                (~30+ min)
 #
@@ -46,6 +47,14 @@ python3 -c 'import sys; sys.exit(sys.version_info >= (3, 11))' || {
     exit 1
 }
 
+if [ "${1:-}" = "--airframes" ]; then
+    # just fly the airframes, e.g. after changing their parameter files or models
+    step "configure sitl"        ./waf configure --board sitl
+    step "build copter sitl"     ./waf copter
+    Tools/scripts/ma_airframe_tests.sh
+    exit $?
+fi
+
 step "lint changed lines"    python3 Tools/scripts/ma_lint.py --base "$LINT_BASE"
 
 python3 -c 'import lxml' 2>/dev/null || {
@@ -73,6 +82,7 @@ import re
 s = open('arducopter.py').read()
 print(' '.join('test.Copter.' + n for n in sorted(set(re.findall(r'def (SpeedLimit\w+)\(self', s)))))
 \")"
+    step "airframe flights"        Tools/scripts/ma_airframe_tests.sh
 fi
 
 # param_parse writes its output files into the repo root, tidy them up
